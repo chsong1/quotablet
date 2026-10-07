@@ -1,0 +1,277 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* UsageDomain.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* UsageDomain.swift */; };
+		A10000000000000000000002 /* OMPClient.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* OMPClient.swift */; };
+		A10000000000000000000003 /* AppPersistence.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* AppPersistence.swift */; };
+		A10000000000000000000004 /* UsageStore.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* UsageStore.swift */; };
+		A10000000000000000000005 /* UsagePanel.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* UsagePanel.swift */; };
+		A10000000000000000000006 /* QuotabletApp.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* QuotabletApp.swift */; };
+		A10000000000000000000007 /* UsageDomain.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* UsageDomain.swift */; };
+		A10000000000000000000008 /* OMPClient.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* OMPClient.swift */; };
+		A10000000000000000000009 /* AppPersistence.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* AppPersistence.swift */; };
+		A1000000000000000000000A /* UsageStore.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* UsageStore.swift */; };
+		A1000000000000000000000B /* UsageDomainTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* UsageDomainTests.swift */; };
+		A1000000000000000000000C /* UsageStoreTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* UsageStoreTests.swift */; };
+		A1000000000000000000000D /* OMPClientTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* OMPClientTests.swift */; };
+		A1000000000000000000000E /* XCTest.framework in Test Frameworks */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000C /* XCTest.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B10000000000000000000001 /* UsageDomain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageDomain.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* OMPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OMPClient.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* AppPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistence.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* UsageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* UsagePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePanel.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* QuotabletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotabletApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* UsageDomainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageDomainTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000008 /* UsageStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStoreTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000009 /* OMPClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OMPClientTests.swift; sourceTree = "<group>"; };
+		B1000000000000000000000A /* Quotablet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quotablet.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000000000000000000000B /* QuotabletTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = QuotabletTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000000000000000000000C /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Platforms/MacOSX.platform/Developer/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E10000000000000000000001 /* App Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000002 /* Test Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000E /* XCTest.framework in Test Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				D10000000000000000000002 /* Quotablet */,
+				D10000000000000000000003 /* QuotabletTests */,
+				D10000000000000000000004 /* Products */,
+				D1000000000000000000000A /* Frameworks */,
+			);
+			sourceTree = "<group>";
+		};
+		D1000000000000000000000A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (B1000000000000000000000C /* XCTest.framework */,);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		D10000000000000000000002 /* Quotablet */ = {
+			isa = PBXGroup;
+			path = Quotablet;
+			sourceTree = "<group>";
+			children = (
+				D10000000000000000000005 /* Domain */,
+				D10000000000000000000006 /* OMP */,
+				D10000000000000000000007 /* Store */,
+				D10000000000000000000008 /* UI */,
+				D10000000000000000000009 /* App */,
+			);
+		};
+		D10000000000000000000005 /* Domain */ = {isa = PBXGroup; path = Domain; sourceTree = "<group>"; children = (B10000000000000000000001 /* UsageDomain.swift */,); };
+		D10000000000000000000006 /* OMP */ = {isa = PBXGroup; path = OMP; sourceTree = "<group>"; children = (B10000000000000000000002 /* OMPClient.swift */,); };
+		D10000000000000000000007 /* Store */ = {isa = PBXGroup; path = Store; sourceTree = "<group>"; children = (B10000000000000000000003 /* AppPersistence.swift */, B10000000000000000000004 /* UsageStore.swift */,); };
+		D10000000000000000000008 /* UI */ = {isa = PBXGroup; path = UI; sourceTree = "<group>"; children = (B10000000000000000000005 /* UsagePanel.swift */,); };
+		D10000000000000000000009 /* App */ = {isa = PBXGroup; path = App; sourceTree = "<group>"; children = (B10000000000000000000006 /* QuotabletApp.swift */,); };
+		D10000000000000000000003 /* QuotabletTests */ = {isa = PBXGroup; path = QuotabletTests; sourceTree = "<group>"; children = (B10000000000000000000007 /* UsageDomainTests.swift */, B10000000000000000000008 /* UsageStoreTests.swift */, B10000000000000000000009 /* OMPClientTests.swift */,); };
+		D10000000000000000000004 /* Products */ = {isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (B1000000000000000000000A /* Quotablet.app */, B1000000000000000000000B /* QuotabletTests.xctest */,); };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F10000000000000000000001 /* Quotablet */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C10000000000000000000001 /* Build configuration list for PBXNativeTarget "Quotablet" */;
+			buildPhases = (E10000000000000000000003 /* App Sources */, E10000000000000000000001 /* App Frameworks */, E10000000000000000000005 /* App Resources */,);
+			buildRules = ();
+			dependencies = ();
+			name = Quotablet;
+			productName = Quotablet;
+			productReference = B1000000000000000000000A /* Quotablet.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F10000000000000000000002 /* QuotabletTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C10000000000000000000002 /* Build configuration list for PBXNativeTarget "QuotabletTests" */;
+			buildPhases = (E10000000000000000000004 /* Test Sources */, E10000000000000000000002 /* Test Frameworks */, E10000000000000000000006 /* Test Resources */,);
+			buildRules = ();
+			dependencies = ();
+			name = QuotabletTests;
+			productName = QuotabletTests;
+			productReference = B1000000000000000000000B /* QuotabletTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F10000000000000000000003 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					F10000000000000000000001 = {CreatedOnToolsVersion = 16.0; };
+					F10000000000000000000002 = {CreatedOnToolsVersion = 16.0; };
+				};
+			};
+			buildConfigurationList = C10000000000000000000003 /* Build configuration list for PBXProject "Quotablet" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base,);
+			mainGroup = D10000000000000000000001;
+			productRefGroup = D10000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (F10000000000000000000001 /* Quotablet */, F10000000000000000000002 /* QuotabletTests */,);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E10000000000000000000005 /* App Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000006 /* Test Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E10000000000000000000003 /* App Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* UsageDomain.swift in App Sources */,
+				A10000000000000000000002 /* OMPClient.swift in App Sources */,
+				A10000000000000000000003 /* AppPersistence.swift in App Sources */,
+				A10000000000000000000004 /* UsageStore.swift in App Sources */,
+				A10000000000000000000005 /* UsagePanel.swift in App Sources */,
+				A10000000000000000000006 /* QuotabletApp.swift in App Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E10000000000000000000004 /* Test Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000007 /* UsageDomain.swift in Test Sources */,
+				A10000000000000000000008 /* OMPClient.swift in Test Sources */,
+				A10000000000000000000009 /* AppPersistence.swift in Test Sources */,
+				A1000000000000000000000A /* UsageStore.swift in Test Sources */,
+				A1000000000000000000000B /* UsageDomainTests.swift in Test Sources */,
+				A1000000000000000000000C /* UsageStoreTests.swift in Test Sources */,
+				A1000000000000000000000D /* OMPClientTests.swift in Test Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		C20000000000000000000001 /* Project Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Debug;
+		};
+		C20000000000000000000002 /* Project Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Release;
+		};
+		C20000000000000000000003 /* App Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_REQUIRED = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Quotablet;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks",);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.quotablet.Quotablet;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Debug;
+		};
+		C20000000000000000000004 /* App Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_REQUIRED = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Quotablet;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks",);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.quotablet.Quotablet;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Release;
+		};
+		C20000000000000000000005 /* Test Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_REQUIRED = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.quotablet.QuotabletTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Debug;
+		};
+		C20000000000000000000006 /* Test Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_REQUIRED = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.quotablet.QuotabletTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C10000000000000000000001 /* Build configuration list for PBXNativeTarget "Quotablet" */ = {isa = XCConfigurationList; buildConfigurations = (C20000000000000000000003 /* App Debug */, C20000000000000000000004 /* App Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		C10000000000000000000002 /* Build configuration list for PBXNativeTarget "QuotabletTests" */ = {isa = XCConfigurationList; buildConfigurations = (C20000000000000000000005 /* Test Debug */, C20000000000000000000006 /* Test Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		C10000000000000000000003 /* Build configuration list for PBXProject "Quotablet" */ = {isa = XCConfigurationList; buildConfigurations = (C20000000000000000000001 /* Project Debug */, C20000000000000000000002 /* Project Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = F10000000000000000000003 /* Project object */;
+}
