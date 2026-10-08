@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 
@@ -166,8 +167,9 @@ final class UsageDomainTests: XCTestCase {
 
         XCTAssertNil(missingWindow.reports.first?.quotas.first?.pinKey)
         XCTAssertEqual(missingWindow.reports.first?.quotas.first?.windowDisplayName, "Window unknown")
-        XCTAssertEqual(different.summarySelection(pinnedKey: savedKey), .unavailable)
-        guard case .pinned(let selection) = returned.summarySelection(pinnedKey: savedKey) else {
+        let pins = MenuBarPins().toggling(savedKey)
+        XCTAssertEqual(different.menuBarSlots(pins: pins), [.missing(savedKey)])
+        guard case .pinned(let selection) = returned.menuBarSlots(pins: pins).first else {
             XCTFail("The exact stable key must reconnect when it returns.")
             return
         }
@@ -219,9 +221,186 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertTrue(freshness.isStale(at: timestamp.addingTimeInterval(900)))
     }
 
+    func testMenuBarSlotsFollowPinOrderAndAMissingPinKeepsItsPosition() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-a"),
+            report(accountID: "acct-b"),
+            report(accountID: "acct-c")
+        ])
+        let keys = try pinKeys(in: snapshot)
+        let departed = try pinKeys(in: UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(accountID: "acct-gone")]))[0]
+        let pins = MenuBarPins().toggling(keys[2]).toggling(departed).toggling(keys[0])
+
+        XCTAssertEqual(
+            described(snapshot.menuBarSlots(pins: pins)),
+            ["pinned:acct-c", "missing:acct-gone", "pinned:acct-a"]
+        )
+    }
+
+    func testWithoutPinsTheDefaultQuotaIsSelectedAndAnEmptySnapshotSelectsNothing() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "openai-codex", accountID: "acct-codex"),
+            report(provider: "anthropic", accountID: "acct-claude")
+        ])
+        let empty = UsageSnapshot(generatedAt: timestamp, reportDrafts: [])
+        let strayKey = try pinKeys(in: snapshot)[0]
+
+        XCTAssertEqual(described(snapshot.menuBarSlots(pins: MenuBarPins())), ["defaulted:acct-claude"])
+        XCTAssertEqual(empty.menuBarSlots(pins: MenuBarPins()), [])
+        XCTAssertEqual(empty.menuBarSlots(pins: MenuBarPins().toggling(strayKey)), [.missing(strayKey)])
+    }
+
+    func testTogglingAppendsRemovesAndNeverDuplicatesPins() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-a"),
+            report(accountID: "acct-b")
+        ])
+        let keys = try pinKeys(in: snapshot)
+        let both = MenuBarPins().toggling(keys[0]).toggling(keys[1])
+
+        XCTAssertEqual(both.keys, [keys[0], keys[1]])
+        XCTAssertEqual(both.toggling(keys[0]).keys, [keys[1]])
+        XCTAssertEqual(both.toggling(keys[0]).toggling(keys[0]).keys, [keys[1], keys[0]])
+        XCTAssertEqual(both.removing(keys[1]).removing(keys[1]).keys, [keys[0]])
+        XCTAssertEqual(both.removing(keys[0]).removing(keys[1]).keys, [])
+        XCTAssertTrue(both.contains(keys[1]))
+        XCTAssertFalse(both.removing(keys[1]).contains(keys[1]))
+    }
+
+    func testDecodingPinsKeepsFirstOccurrenceOrderAndDropsRepeats() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-a"),
+            report(accountID: "acct-b")
+        ])
+        let keys = try pinKeys(in: snapshot)
+        let data = try JSONEncoder().encode([keys[1], keys[0], keys[1]])
+
+        let decoded = try JSONDecoder().decode(MenuBarPins.self, from: data)
+
+        XCTAssertEqual(decoded.keys, [keys[1], keys[0]])
+    }
+
+    func testAccountNumberStaysHiddenWhenAProvidersSlotsComeFromOneAccount() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "xai-oauth", accountID: "grok-a", quotas: [quota(id: "session"), quota(id: "weekly")]),
+            report(provider: "xai-oauth", accountID: "grok-b", quotas: [quota(id: "session"), quota(id: "weekly")])
+        ])
+        let firstAccount = try pinKeys(of: snapshot.reports[0])
+        let secondAccount = try pinKeys(of: snapshot.reports[1])
+
+        XCTAssertEqual(accountNumbers(pinning: firstAccount, in: snapshot), [nil, nil])
+        XCTAssertEqual(accountNumbers(pinning: secondAccount, in: snapshot), [nil, nil])
+    }
+
+    func testAccountNumberTellsAccountsApartWhenAProvidersSlotsSpanTwoAccounts() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "openai-codex", accountID: "codex-a"),
+            report(provider: "xai-oauth", accountID: "grok-a"),
+            report(provider: "openai-codex", accountID: "codex-b")
+        ])
+        let keys = try pinKeys(in: snapshot)
+
+        XCTAssertEqual(accountNumbers(pinning: [keys[0], keys[2]], in: snapshot), [1, 2])
+        XCTAssertEqual(accountNumbers(pinning: [keys[2], keys[0]], in: snapshot), [2, 1])
+        XCTAssertEqual(accountNumbers(pinning: [keys[0], keys[1], keys[2]], in: snapshot), [1, nil, 2])
+        XCTAssertEqual(accountNumbers(pinning: [keys[2]], in: snapshot), [nil])
+        XCTAssertEqual(UsageFormatting.accountAlias(snapshot.accountNumber(of: snapshot.reports[2])), "Account 2")
+    }
+
+    func testAccountNumberFollowsEachSlotsOwnAccountWhenAProviderMixesAccounts() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "openai-codex", accountID: "codex-a", quotas: [quota(id: "session"), quota(id: "weekly")]),
+            report(provider: "openai-codex", accountID: "codex-b")
+        ])
+        let first = try pinKeys(of: snapshot.reports[0])
+        let second = try pinKeys(of: snapshot.reports[1])
+
+        XCTAssertEqual(accountNumbers(pinning: [first[0], first[1], second[0]], in: snapshot), [1, 1, 2])
+        XCTAssertEqual(accountNumbers(pinning: [first[0], second[0], first[1]], in: snapshot), [1, 2, 1])
+    }
+
+    func testMissingSlotsNeverShowAnAccountNumberAndDoNotCountAsAnAccount() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "xai-oauth", accountID: "grok-a", quotas: [quota(id: "session"), quota(id: "weekly")]),
+            report(provider: "openai-codex", accountID: "codex-a"),
+            report(provider: "openai-codex", accountID: "codex-b")
+        ])
+        let grok = try pinKeys(of: snapshot.reports[0])
+        let codexA = try pinKeys(of: snapshot.reports[1])[0]
+        let codexB = try pinKeys(of: snapshot.reports[2])[0]
+        let departed = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "xai-oauth", accountID: "grok-gone"),
+            report(provider: "openai-codex", accountID: "codex-gone")
+        ])
+        let goneGrok = try pinKeys(of: departed.reports[0])[0]
+        let goneCodex = try pinKeys(of: departed.reports[1])[0]
+
+        XCTAssertEqual(accountNumbers(pinning: [grok[0], goneGrok], in: snapshot), [nil, nil])
+        XCTAssertEqual(accountNumbers(pinning: [goneGrok, grok[0]], in: snapshot), [nil, nil])
+        XCTAssertEqual(accountNumbers(pinning: [grok[0], grok[1], goneGrok], in: snapshot), [nil, nil, nil])
+        XCTAssertEqual(accountNumbers(pinning: [codexA, codexB, goneCodex], in: snapshot), [1, 2, nil])
+        XCTAssertEqual(accountNumbers(pinning: [codexA, goneCodex], in: snapshot), [nil, nil])
+    }
+
+    func testGaugeReadsUsedFractionClampsItAndKeepsUnknownDistinct() {
+        func amount(usedFraction: Double?, remainingFraction: Double? = nil) -> UsageAmount {
+            UsageAmount(
+                used: nil,
+                limit: nil,
+                remaining: nil,
+                usedFraction: usedFraction,
+                remainingFraction: remainingFraction,
+                unit: .percent
+            )
+        }
+
+        XCTAssertEqual(BadgeGauge(amount: amount(usedFraction: nil)), .unknown)
+        XCTAssertEqual(BadgeGauge(amount: nil), .unknown)
+        XCTAssertEqual(BadgeGauge(amount: amount(usedFraction: 0)), .used(0))
+        XCTAssertEqual(BadgeGauge(amount: amount(usedFraction: 0.42)), .used(0.42))
+        XCTAssertEqual(BadgeGauge(amount: amount(usedFraction: 1.6)), .used(1))
+        XCTAssertEqual(BadgeGauge(amount: amount(usedFraction: -0.2)), .used(0))
+        XCTAssertEqual(BadgeGauge(amount: amount(usedFraction: nil, remainingFraction: 0.25)), .used(0.75))
+    }
+
+    func testMissingSlotKeepsItsProviderLetterWithoutAGaugeOrAccountNumber() {
+        let key = QuotaPinKey(
+            account: StableAccountIdentity(provider: "mistral", accountID: "acct-m", organizationID: nil, projectID: nil),
+            limitID: "session",
+            scope: nil,
+            window: QuotaWindowIdentity(id: "5h")
+        )
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [])
+
+        let badges = MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: MenuBarPins().toggling(key)), now: timestamp)
+
+        XCTAssertEqual(badges, [MenuBarBadge(letter: "M", accountNumber: nil, gauge: .missing, isStale: false)])
+    }
+
+    func testBadgeTurnsStaleWhenProviderDataReachesTheStaleBoundary() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(accountID: "acct-a")])
+        let key = try pinKeys(in: snapshot)[0]
+        let pins = MenuBarPins().toggling(key)
+        func isStale(after seconds: TimeInterval) -> Bool {
+            let now = timestamp.addingTimeInterval(seconds)
+            return MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: pins), now: now)[0].isStale
+        }
+
+        XCTAssertFalse(isStale(after: 899))
+        XCTAssertTrue(isStale(after: 900))
+    }
+
+    func testProviderRegistryResolvesKnownIdsAndFallsBackToTheRawIdAndItsFirstLetter() {
+        XCTAssertEqual(ProviderRegistry.displayName(for: "Anthropic"), "Claude")
+        XCTAssertEqual(ProviderRegistry.badgeLetter(for: "openai-codex"), "O")
+        XCTAssertEqual(ProviderRegistry.displayName(for: "mistral"), "mistral")
+        XCTAssertEqual(ProviderRegistry.badgeLetter(for: "mistral"), "M")
+    }
+
     private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
 
     private func report(
+        provider: String = "anthropic",
         accountID: String?,
         organizationID: String? = nil,
         projectID: String? = nil,
@@ -229,7 +408,7 @@ final class UsageDomainTests: XCTestCase {
         quotas: [UsageQuotaDraft]? = nil
     ) -> UsageReportDraft {
         UsageReportDraft(
-            provider: "anthropic",
+            provider: provider,
             sourceAccount: SourceAccountIdentity(accountID: accountID, organizationID: organizationID, projectID: projectID),
             privateDisplayLabel: label,
             fetchedAt: timestamp,
@@ -263,5 +442,189 @@ final class UsageDomainTests: XCTestCase {
             status: .available,
             resetsAt: resetsAt
         )
+    }
+
+    private func pinKeys(in snapshot: UsageSnapshot) throws -> [QuotaPinKey] {
+        try snapshot.reports.map { try XCTUnwrap($0.quotas.first?.pinKey) }
+    }
+
+    private func pinKeys(of report: UsageReport) throws -> [QuotaPinKey] {
+        try report.quotas.map { try XCTUnwrap($0.pinKey) }
+    }
+
+    private func accountNumbers(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [Int?] {
+        let pins = keys.reduce(MenuBarPins()) { $0.toggling($1) }
+        return MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: pins), now: timestamp).map(\.accountNumber)
+    }
+
+    private func described(_ slots: [MenuBarSlot]) -> [String] {
+        slots.map { slot in
+            switch slot {
+            case .pinned(let selection): "pinned:\(selection.report.sourceAccount?.accountID ?? "-")"
+            case .defaulted(let selection): "defaulted:\(selection.report.sourceAccount?.accountID ?? "-")"
+            case .missing(let key): "missing:\(key.account.accountID)"
+            }
+        }
+    }
+}
+
+final class MenuBarBadgeRendererTests: XCTestCase {
+    func testFillHeightHitsTheEndpointsAndGrowsWithTheFraction() {
+        let geometry = RoundedSquareGeometry(side: 14)
+
+        XCTAssertEqual(geometry.fillHeight(forUsedFraction: 0), 0)
+        XCTAssertEqual(geometry.fillHeight(forUsedFraction: 1), 14)
+        XCTAssertEqual(geometry.fillHeight(forUsedFraction: -0.5), 0)
+        XCTAssertEqual(geometry.fillHeight(forUsedFraction: 2), 14)
+        let heights = (0...100).map { geometry.fillHeight(forUsedFraction: Double($0) / 100) }
+        for (lower, upper) in zip(heights, heights.dropFirst()) {
+            XCTAssertLessThan(lower, upper)
+        }
+    }
+
+    func testFillHeightCoversTheFractionOfTheAreaNotOfTheHeight() {
+        let geometry = RoundedSquareGeometry(side: 14)
+
+        for fraction in [0.25, 0.5, 0.75] {
+            let height = geometry.fillHeight(forUsedFraction: fraction)
+            XCTAssertEqual(sampledShare(of: geometry, below: height), fraction, accuracy: 0.005)
+        }
+        XCTAssertGreaterThan(geometry.fillHeight(forUsedFraction: 0.25), 3.5)
+        XCTAssertEqual(geometry.fillHeight(forUsedFraction: 0.5), 7, accuracy: 0.001)
+        XCTAssertLessThan(geometry.fillHeight(forUsedFraction: 0.75), 10.5)
+    }
+
+    func testImageIsATemplateWithOneColumnPerBadgeAndRoomForTheAccountNumber() {
+        let plain = badge(.used(0.5))
+        let numbered = badge(.used(0.5), number: 2)
+
+        let image = MenuBarBadgeRenderer.image(for: [plain, plain, plain])
+        let withNumber = MenuBarBadgeRenderer.image(for: [plain, plain, numbered])
+        let large = MenuBarBadgeRenderer.image(for: [plain], height: 22)
+
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertEqual(image.size, NSSize(width: 50, height: 16))
+        XCTAssertEqual(withNumber.size.width - image.size.width, 6, accuracy: 1)
+        XCTAssertEqual(large.size.height, 22)
+        XCTAssertEqual(large.size.width, 19.25, accuracy: 0.001)
+    }
+
+    func testGaugeFillsFromTheBottomOverATrackAndKnocksTheLetterOut() throws {
+        let empty = try render([badge(.used(0))])
+        let half = try render([badge(.used(0.5))])
+        let full = try render([badge(.used(1))])
+
+        XCTAssertEqual(empty.alpha(x: 9, row: 16), 0.30, accuracy: 0.03)
+        XCTAssertEqual(full.alpha(x: 9, row: 16), 1, accuracy: 0.03)
+        XCTAssertEqual(half.alpha(x: 9, row: 26), 1, accuracy: 0.03)
+        XCTAssertEqual(half.alpha(x: 9, row: 6), 0.30, accuracy: 0.03)
+        XCTAssertEqual(empty.alpha(x: 14, row: 16), 0, accuracy: 0.05)
+        XCTAssertEqual(full.alpha(x: 14, row: 16), 0, accuracy: 0.05)
+    }
+
+    func testUnknownDrawsAFramedOutlineAndMissingDashesIt() throws {
+        let unknown = try render([badge(.unknown)])
+        let missing = try render([badge(.missing)])
+
+        XCTAssertEqual(unknown.alpha(x: 9, row: 16), 0, accuracy: 0.02)
+        XCTAssertEqual(unknown.alpha(x: 14, row: 16), 0.9, accuracy: 0.05)
+        XCTAssertGreaterThan((10...22).map { unknown.alpha(x: 0, row: $0) }.min() ?? 0, 0.85)
+        let dashedEdge = (10...22).map { missing.alpha(x: 0, row: $0) }
+        XCTAssertLessThan(dashedEdge.min() ?? 1, 0.1)
+        XCTAssertGreaterThan(dashedEdge.max() ?? 0, 0.45)
+        XCTAssertEqual(missing.alpha(x: 14, row: 16), 0.55, accuracy: 0.05)
+    }
+
+    func testStaleBadgeStripesTheFilledPartAndDimsTheTrack() throws {
+        let fresh = try render([badge(.used(1))])
+        let stale = try render([badge(.used(1), isStale: true)])
+        let staleEmpty = try render([badge(.used(0), isStale: true)])
+
+        let bands = [28, 26, 24, 22].map { stale.alpha(x: 9, row: $0) }
+        XCTAssertEqual(bands[0], bands[2], accuracy: 0.03)
+        XCTAssertEqual(bands[1], bands[3], accuracy: 0.03)
+        XCTAssertGreaterThan(abs(bands[0] - bands[1]), 0.2)
+        XCTAssertLessThan(bands.max() ?? 1, 0.7)
+        XCTAssertEqual(fresh.alpha(x: 9, row: 28), 1, accuracy: 0.03)
+        XCTAssertEqual(staleEmpty.alpha(x: 9, row: 16), 0.16, accuracy: 0.03)
+    }
+
+    func testStaleUnknownBadgeDimsItsOutlineLetterAndAccountNumber() throws {
+        let fresh = try render([badge(.unknown, number: 8)])
+        let stale = try render([badge(.unknown, number: 8, isStale: true)])
+        let badgeColumns = 0..<28
+        let numberColumns = 30..<40
+
+        XCTAssertEqual(fresh.peakAlpha(columns: badgeColumns) - stale.peakAlpha(columns: badgeColumns), 0.405, accuracy: 0.03)
+        XCTAssertEqual(fresh.peakAlpha(columns: numberColumns) - stale.peakAlpha(columns: numberColumns), 0.45, accuracy: 0.03)
+    }
+
+    func testAccountNumberSitsRightOfTheBadgeOnItsBottomEdge() throws {
+        let numbered = try render([badge(.used(0.5), number: 8)])
+
+        let lowerRows = (18...30).flatMap { row in (30..<40).map { numbered.alpha(x: $0, row: row) } }
+        let upperRows = (2..<12).flatMap { row in (30..<40).map { numbered.alpha(x: $0, row: row) } }
+        XCTAssertGreaterThan(lowerRows.max() ?? 0, 0.8)
+        XCTAssertEqual(upperRows.max() ?? 1, 0, accuracy: 0.01)
+    }
+
+    private func badge(_ gauge: BadgeGauge, number: Int? = nil, isStale: Bool = false) -> MenuBarBadge {
+        MenuBarBadge(letter: "I", accountNumber: number, gauge: gauge, isStale: isStale)
+    }
+
+    private struct Pixels {
+        let bytes: [UInt8]
+        let bytesPerRow: Int
+
+        func alpha(x: Int, row: Int) -> Double {
+            Double(bytes[row * bytesPerRow + x * 4 + 3]) / 255
+        }
+
+        func peakAlpha(columns: Range<Int>) -> Double {
+            (0..<bytes.count / bytesPerRow).flatMap { row in columns.map { alpha(x: $0, row: row) } }.max() ?? 0
+        }
+    }
+
+    private func render(_ badges: [MenuBarBadge]) throws -> Pixels {
+        let scale = 2
+        let image = MenuBarBadgeRenderer.image(for: badges)
+        let height = Int(image.size.height) * scale
+        let bitmap = try XCTUnwrap(CGContext(
+            data: nil,
+            width: Int(image.size.width) * scale,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        bitmap.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: false)
+        image.draw(in: NSRect(origin: .zero, size: image.size))
+        NSGraphicsContext.restoreGraphicsState()
+        let data = try XCTUnwrap(bitmap.data)
+        let buffer = UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: bitmap.bytesPerRow * height)
+        return Pixels(bytes: Array(buffer), bytesPerRow: bitmap.bytesPerRow)
+    }
+
+    private func sampledShare(of geometry: RoundedSquareGeometry, below height: CGFloat) -> Double {
+        let side = Double(geometry.side)
+        let radius = Double(geometry.cornerRadius)
+        let steps = 1000
+        var filled = 0
+        var total = 0
+        for row in 0..<steps {
+            let y = (Double(row) + 0.5) / Double(steps) * side
+            for column in 0..<steps {
+                let x = (Double(column) + 0.5) / Double(steps) * side
+                let nearestX = min(max(x, radius), side - radius)
+                let nearestY = min(max(y, radius), side - radius)
+                guard hypot(x - nearestX, y - nearestY) <= radius else { continue }
+                total += 1
+                if y < Double(height) { filled += 1 }
+            }
+        }
+        return Double(filled) / Double(total)
     }
 }

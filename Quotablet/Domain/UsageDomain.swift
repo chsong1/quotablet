@@ -146,13 +146,6 @@ struct QuotaWindow: Codable, Equatable, Sendable {
         guard !name.localizedCaseInsensitiveContains(duration) else { return name }
         return "\(name) · \(duration)"
     }
-
-    var compactDisplayName: String {
-        if let duration = UsageFormatting.compactDuration(milliseconds: durationMilliseconds) { return duration }
-        let sourceName = identity.id.isEmpty ? label : identity.id
-        let prefix = String(sourceName.prefix(12))
-        return sourceName.count > 12 ? "\(prefix)…" : prefix
-    }
 }
 
 struct StableAccountIdentity: Codable, Hashable, Sendable {
@@ -279,13 +272,104 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
 struct SelectedQuota: Equatable, Sendable {
     let report: UsageReport
     let quota: UsageQuota
+    let accountNumber: Int
 }
 
-enum SummarySelection: Equatable, Sendable {
+struct MenuBarPins: Codable, Equatable, Sendable {
+    private(set) var keys: [QuotaPinKey]
+
+    init() {
+        keys = []
+    }
+
+    init(from decoder: Decoder) throws {
+        // A hand-edited file can repeat a key. Keep the first so the list stays duplicate-free.
+        var seen = Set<QuotaPinKey>()
+        keys = try decoder.singleValueContainer().decode([QuotaPinKey].self).filter { seen.insert($0).inserted }
+    }
+
+    private init(keys: [QuotaPinKey]) {
+        self.keys = keys
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(keys)
+    }
+
+    func contains(_ key: QuotaPinKey) -> Bool {
+        keys.contains(key)
+    }
+
+    func toggling(_ key: QuotaPinKey) -> MenuBarPins {
+        contains(key) ? removing(key) : MenuBarPins(keys: keys + [key])
+    }
+
+    func removing(_ key: QuotaPinKey) -> MenuBarPins {
+        MenuBarPins(keys: keys.filter { $0 != key })
+    }
+}
+
+enum MenuBarSlot: Equatable, Sendable {
     case pinned(SelectedQuota)
+    case missing(QuotaPinKey)
     case defaulted(SelectedQuota)
-    case unavailable
-    case none
+
+    var selected: SelectedQuota? {
+        switch self {
+        case .pinned(let selection), .defaulted(let selection): selection
+        case .missing: nil
+        }
+    }
+
+    var provider: String {
+        switch self {
+        case .pinned(let selection), .defaulted(let selection): selection.report.provider
+        case .missing(let key): key.account.provider
+        }
+    }
+}
+
+enum BadgeGauge: Equatable, Sendable {
+    case used(Double)
+    case unknown
+    case missing
+
+    // Reads the progress the panel bar draws, so a badge and its bar never disagree.
+    init(amount: UsageAmount?) {
+        if let progress = amount?.progress {
+            self = .used(progress)
+        } else {
+            self = .unknown
+        }
+    }
+}
+
+struct MenuBarBadge: Equatable, Sendable {
+    let letter: String
+    let accountNumber: Int?
+    let gauge: BadgeGauge
+    let isStale: Bool
+
+    static func badges(for slots: [MenuBarSlot], now: Date) -> [MenuBarBadge] {
+        // The number only tells accounts apart, so a provider's slots show one only when they span two or more accounts.
+        let accountsByProvider = Dictionary(grouping: slots.compactMap(\.selected), by: { $0.report.provider })
+            .mapValues { Set($0.map(\.accountNumber)) }
+        return slots.map { slot -> MenuBarBadge in
+            let letter = ProviderRegistry.badgeLetter(for: slot.provider)
+            guard let selection = slot.selected else {
+                return MenuBarBadge(letter: letter, accountNumber: nil, gauge: .missing, isStale: false)
+            }
+            let freshness = UsageFreshness(origin: nil, fetchedAt: selection.report.fetchedAt, refreshStatus: .idle)
+            let spansAccounts = accountsByProvider[selection.report.provider, default: []].count > 1
+            return MenuBarBadge(
+                letter: letter,
+                accountNumber: spansAccounts ? selection.accountNumber : nil,
+                gauge: BadgeGauge(amount: selection.quota.amount),
+                isStale: freshness.isStale(at: now)
+            )
+        }
+    }
 }
 
 struct UsageSnapshot: Codable, Equatable, Sendable {
@@ -369,41 +453,46 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         }
     }
 
-    func summarySelection(pinnedKey: QuotaPinKey?) -> SummarySelection {
-        if let pinnedKey {
-            let matches = reports.flatMap { report in
-                report.quotas.compactMap { quota in
-                    quota.pinKey == pinnedKey ? SelectedQuota(report: report, quota: quota) : nil
-                }
-            }
-            guard matches.count == 1, let match = matches.first else { return .unavailable }
+    func accountNumber(of report: UsageReport) -> Int {
+        let sameProvider = reports.filter { $0.provider == report.provider }
+        return (sameProvider.firstIndex { $0.id == report.id } ?? 0) + 1
+    }
+
+    func menuBarSlots(pins: MenuBarPins) -> [MenuBarSlot] {
+        let candidates = reports.flatMap { report -> [SelectedQuota] in
+            let number = accountNumber(of: report)
+            return report.quotas.map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
+        }
+        guard !pins.keys.isEmpty else {
+            guard let first = candidates.min(by: Self.isDefaultedBefore) else { return [] }
+            return [.defaulted(first)]
+        }
+        return pins.keys.map { key -> MenuBarSlot in
+            let matches = candidates.filter { $0.quota.pinKey == key }
+            guard matches.count == 1, let match = matches.first else { return .missing(key) }
             return .pinned(match)
         }
-        let candidates = reports.flatMap { report in
-            report.quotas.map { SelectedQuota(report: report, quota: $0) }
+    }
+
+    private static func isDefaultedBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
+        if left.report.provider != right.report.provider {
+            return left.report.provider.localizedStandardCompare(right.report.provider) == .orderedAscending
         }
-        let sorted = candidates.sorted { left, right in
-            if left.report.provider != right.report.provider {
-                return left.report.provider.localizedStandardCompare(right.report.provider) == .orderedAscending
-            }
-            if left.report.stableSortComponents != right.report.stableSortComponents {
-                return left.report.stableSortComponents.lexicographicallyPrecedes(right.report.stableSortComponents)
-            }
-            let leftWindowID = left.quota.window?.identity.id ?? ""
-            let rightWindowID = right.quota.window?.identity.id ?? ""
-            if leftWindowID != rightWindowID {
-                return leftWindowID.localizedStandardCompare(rightWindowID) == .orderedAscending
-            }
-            if left.quota.label != right.quota.label {
-                return left.quota.label.localizedStandardCompare(right.quota.label) == .orderedAscending
-            }
-            if left.quota.id.reportOrdinal != right.quota.id.reportOrdinal {
-                return left.quota.id.reportOrdinal < right.quota.id.reportOrdinal
-            }
-            return left.quota.id.quotaOrdinal < right.quota.id.quotaOrdinal
+        if left.report.stableSortComponents != right.report.stableSortComponents {
+            return left.report.stableSortComponents.lexicographicallyPrecedes(right.report.stableSortComponents)
         }
-        guard let first = sorted.first else { return .none }
-        return .defaulted(first)
+        let leftWindowID = left.quota.window?.identity.id ?? ""
+        let rightWindowID = right.quota.window?.identity.id ?? ""
+        if leftWindowID != rightWindowID {
+            return leftWindowID.localizedStandardCompare(rightWindowID) == .orderedAscending
+        }
+        if left.quota.label != right.quota.label {
+            return left.quota.label.localizedStandardCompare(right.quota.label) == .orderedAscending
+        }
+        if left.quota.id.reportOrdinal != right.quota.id.reportOrdinal {
+            return left.quota.id.reportOrdinal < right.quota.id.reportOrdinal
+        }
+        return left.quota.id.quotaOrdinal < right.quota.id.quotaOrdinal
     }
 }
 
@@ -446,15 +535,6 @@ struct UsageFreshness: Equatable, Sendable {
         return parts.isEmpty ? "Waiting for OMP" : parts.joined(separator: " · ")
     }
 
-    func compactIndicator(now: Date) -> String? {
-        var parts: [String] = []
-        if refreshStatus == .failed { parts.append("Failed") }
-        if origin == .cached { parts.append("Saved") }
-        if isStale(at: now) { parts.append("Stale") }
-        if parts.isEmpty, refreshStatus == .refreshing { parts.append("Refreshing") }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     private func ageSeconds(at now: Date) -> TimeInterval? {
         guard let fetchedAt else { return nil }
         let age = max(0, now.timeIntervalSince(fetchedAt))
@@ -463,14 +543,8 @@ struct UsageFreshness: Equatable, Sendable {
 }
 
 enum UsageFormatting {
-    static func providerName(_ providerID: String) -> String {
-        switch providerID.lowercased() {
-        case "anthropic": "Claude"
-        case "openai-codex": "Codex"
-        case "cursor": "Cursor"
-        case "xai-oauth": "Grok"
-        default: providerID
-        }
+    static func accountAlias(_ number: Int) -> String {
+        "Account \(number)"
     }
 
     static func remainingText(_ amount: UsageAmount?) -> String {
@@ -552,6 +626,33 @@ enum UsageFormatting {
     private static func formatNumber(_ value: Double) -> String {
         guard value.isFinite else { return "Unknown" }
         return value.formatted(.number.grouping(.automatic).precision(.fractionLength(0...2)))
+    }
+}
+
+enum ProviderRegistry {
+    private struct Entry: Sendable {
+        let displayName: String
+        let badgeLetter: String
+    }
+
+    private static let entries: [String: Entry] = [
+        "anthropic": Entry(displayName: "Claude", badgeLetter: "C"),
+        "openai-codex": Entry(displayName: "Codex", badgeLetter: "O"),
+        "xai-oauth": Entry(displayName: "Grok", badgeLetter: "G"),
+        "cursor": Entry(displayName: "Cursor", badgeLetter: "U"),
+    ]
+
+    static func displayName(for providerID: String) -> String {
+        entry(for: providerID).displayName
+    }
+
+    static func badgeLetter(for providerID: String) -> String {
+        entry(for: providerID).badgeLetter
+    }
+
+    private static func entry(for providerID: String) -> Entry {
+        entries[providerID.lowercased()]
+            ?? Entry(displayName: providerID, badgeLetter: String(providerID.prefix(1)).uppercased())
     }
 }
 

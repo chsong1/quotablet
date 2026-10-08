@@ -41,13 +41,26 @@ Set `DEVELOPER_DIR` on each command. Keep DerivedData under the ignored `.local/
 
 ## What it does
 
-Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label summarizes one quota. The panel lists every report returned by OMP.
+Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one badge for each quota you pin. The panel lists every report returned by OMP.
 
 **Collection cadence.** On launch the app loads any saved snapshot, then refreshes immediately. It refreshes again every 5 minutes and whenever you press the panel refresh control. A separate presentation clock ticks every 30 seconds so age and reset countdowns move without another OMP call.
 
-**Freshness.** Provider age is measured from each report's `fetchedAt`. Age of 15 minutes or more is treated as stale by app policy. A failed refresh keeps the last successful snapshot and surfaces the error. A successful empty snapshot replaces the previous reports with none. Missing remaining values stay unknown; unknown is never treated as zero remaining. When a reset time has already passed, the UI says to recheck. That does not claim the quota has been replenished.
+**Freshness.** Provider age is measured from each report's `fetchedAt`. Age of 15 minutes or more is treated as stale by app policy, and the badge for a stale quota changes look. A failed refresh keeps the last successful snapshot and surfaces the error. A successful empty snapshot replaces the previous reports with none. Missing remaining values stay unknown; unknown is never treated as zero remaining. When a reset time has already passed, the UI says to recheck. That does not claim the quota has been replenished.
 
-**Menu bar pin.** You can pin one stable provider, account, limit, and window key for the menu bar summary. If that key is missing from the current snapshot, the pin stays unavailable. Quotablet does not silently substitute another quota. Pinning one row is not a statement about global provider availability.
+**Menu bar badges.** Press the pin button on a quota row to add that quota to the menu bar. Press it again to remove the quota. Each pinned quota gets one badge, in the order you pinned them. Quotablet draws all badges into one template image, so the menu bar tints them to match its appearance and they stay sharp at every display scale.
+
+A badge is a 14 pt rounded square with the provider's initial in a heavy system font. The letters are `C` for Claude, `O` for Codex, `G` for Grok, and `U` for Cursor. For a provider that Quotablet does not know, the panel shows the raw provider id and the badge shows its first letter in capitals. The badge fills from the bottom as the quota is used. The fill covers the used share of the badge's area, not of its height, so the rounded corners do not skew the reading. The letter is cut out of the badge and stays readable over both the used and the unused part.
+
+A badge shows a small account number only when the number tells accounts apart. If a provider's pinned quotas come from two or more accounts, each of those badges shows the number of its account. The number matches the `N` in the panel's `Account N` label. If every pinned quota of a provider comes from one account, none of those badges shows a number. A missing pin never shows a number and does not count as an account. With nothing pinned, the menu bar shows the first quota in provider order, and the panel marks it as selected by default. With no quota available, the menu bar shows the `gauge.with.dots.needle.33percent` symbol.
+
+A badge has one of four looks.
+
+- **Fresh.** The unused part is drawn at 30% opacity and the used part at full opacity.
+- **Stale.** Provider data is 15 minutes old or older. The badge dims and 1 pt stripes cross the filled part. The stripes keep an exhausted stale quota from looking like a fresh, unused one. An unknown badge dims by the same proportion when its data is stale. It has no fill, so it has no stripes.
+- **Unknown.** The quota has no usable usage figure. The badge is a 1 pt outline with a solid letter and no fill, so it never reads as 0% or 100%.
+- **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. The panel shows "Pinned quota unavailable" with a **Remove** button.
+
+**No company logos.** Badges use a system-font letter on a system shape. Quotablet does not draw, trace, embed, or download any company logo. Anthropic, OpenAI, and xAI publish brand rules that forbid altering their logos, and a usage gauge alters a logo by filling and recoloring it. This repository is also public.
 
 **Account labels.** Account names and identifiers stay hidden by default and show as `Account N` per provider. Reveal is session-only and is not written to disk.
 
@@ -68,7 +81,7 @@ Runtime settings and the last successful snapshot live under:
 
 `~/Library/Application Support/Quotablet`
 
-The directory holds `settings.json` and `usage-snapshot.json`. The directory and files have owner-only permissions. Writes use atomic temporary files renamed into place.
+The directory holds `settings.json` and `usage-snapshot.json`. `settings.json` stores the OMP executable override and the pinned quota keys in menu bar order. A settings file without pinned keys means nothing is pinned, and a `pinnedQuota` key from an earlier build is ignored. The directory and files have owner-only permissions. Writes use atomic temporary files renamed into place.
 
 That Application Support cache is private app state. It is separate from the repository's ignored `.local/` directory, which is only for local developer build and artifact output such as DerivedData.
 
