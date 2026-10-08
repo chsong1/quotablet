@@ -56,6 +56,8 @@ enum MenuBarBadgeRenderer {
     private static let badgeSpacing: CGFloat = 4
     private static let digitGap: CGFloat = 1
     private static let digitFontSize: CGFloat = 8.5
+    // At 1x a 6 pt tag loses its stems.
+    private static let tagFontSize: CGFloat = 7
     private static let letterCapRatio: CGFloat = 0.58
     private static let outlineWidth: CGFloat = 1
     private static let dashCount: CGFloat = 12
@@ -94,9 +96,13 @@ enum MenuBarBadgeRenderer {
         var columns: [Column] = []
         var originX: CGFloat = 0
         for badge in badges {
+            let digitAdvance = badge.accountNumber.map { advance(of: String($0), font: digitFont()) } ?? 0
+            let tagAdvance = badge.windowTag.map { advance(of: $0, font: tagFont()) } ?? 0
+            // The digit and the tag share the column right of the badge, so it is as wide as the wider of the two.
+            let sideAdvance = max(digitAdvance, tagAdvance)
             // Whole points keep every badge edge on the pixel grid at 1x.
-            let digitWidth = badge.accountNumber.map { (digitGap + digitAdvance(String($0))).rounded() } ?? 0
-            let width = badgeSide + digitWidth
+            let sideWidth = sideAdvance > 0 ? (digitGap + sideAdvance).rounded() : 0
+            let width = badgeSide + sideWidth
             columns.append(Column(badge: badge, originX: originX, width: width))
             originX += width + badgeSpacing
         }
@@ -122,19 +128,25 @@ enum MenuBarBadgeRenderer {
         let rect = CGRect(x: column.originX, y: (slotHeight - badgeSide) / 2, width: badgeSide, height: badgeSide)
         // Staleness is the report's age, not its amount, so an unknown gauge goes stale too. A missing pin has no report.
         let staleDim: CGFloat = badge.isStale ? staleFillAlpha : 1
-        var digitAlpha: CGFloat = 1
+        var textAlpha: CGFloat = 1
         switch badge.gauge {
         case .used(let fraction):
             drawGauge(fraction, isStale: badge.isStale, letter: badge.letter, rect: rect, geometry: geometry, in: context)
-            digitAlpha = staleDim
+            textAlpha = staleDim
         case .unknown:
             drawOutline(letter: badge.letter, rect: rect, geometry: geometry, alpha: unknownAlpha * staleDim, isDashed: false, in: context)
-            digitAlpha = staleDim
+            textAlpha = staleDim
         case .missing:
             drawOutline(letter: badge.letter, rect: rect, geometry: geometry, alpha: missingAlpha, isDashed: true, in: context)
         }
+        let sideX = rect.maxX + digitGap
         if let number = badge.accountNumber {
-            drawDigits(String(number), at: CGPoint(x: rect.maxX + digitGap, y: rect.minY), alpha: digitAlpha, in: context)
+            drawText(String(number), font: digitFont(), at: CGPoint(x: sideX, y: rect.minY), alpha: textAlpha, in: context)
+        }
+        if let tag = badge.windowTag {
+            // The tag's cap line meets the badge's top edge. A whole-point baseline keeps flat strokes crisp at 1x.
+            let font = tagFont()
+            drawText(tag, font: font, at: CGPoint(x: sideX, y: (rect.maxY - font.capHeight).rounded()), alpha: textAlpha, in: context)
         }
     }
 
@@ -219,13 +231,13 @@ enum MenuBarBadgeRenderer {
         CTLineDraw(line, context)
     }
 
-    private static func drawDigits(_ digits: String, at origin: CGPoint, alpha: CGFloat, in context: CGContext) {
+    private static func drawText(_ text: String, font: NSFont, at origin: CGPoint, alpha: CGFloat, in context: CGContext) {
         context.saveGState()
         context.setAlpha(alpha)
         context.setFillColor(gray: 0, alpha: 1)
         context.textMatrix = .identity
         context.textPosition = origin
-        CTLineDraw(typeset(digits, font: digitFont()), context)
+        CTLineDraw(typeset(text, font: font), context)
         context.restoreGState()
     }
 
@@ -235,8 +247,8 @@ enum MenuBarBadgeRenderer {
         return max(0, (reached - base) / (1 - base))
     }
 
-    private static func digitAdvance(_ digits: String) -> CGFloat {
-        CGFloat(CTLineGetTypographicBounds(typeset(digits, font: digitFont()), nil, nil, nil))
+    private static func advance(of text: String, font: NSFont) -> CGFloat {
+        CGFloat(CTLineGetTypographicBounds(typeset(text, font: font), nil, nil, nil))
     }
 
     private static func typeset(_ text: String, font: NSFont) -> CTLine {
@@ -251,5 +263,9 @@ enum MenuBarBadgeRenderer {
 
     private static func digitFont() -> NSFont {
         NSFont.monospacedDigitSystemFont(ofSize: digitFontSize, weight: .bold)
+    }
+
+    private static func tagFont() -> NSFont {
+        NSFont.systemFont(ofSize: tagFontSize, weight: .bold)
     }
 }

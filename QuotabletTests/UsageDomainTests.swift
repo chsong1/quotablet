@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import Foundation
 import SwiftUI
 import XCTest
@@ -343,6 +344,106 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertEqual(accountNumbers(pinning: [codexA, goneCodex], in: snapshot), [nil, nil])
     }
 
+    func testWindowTagNamesEachLengthWhenOneAccountPinsTwoOrMoreLengths() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", windowID: "5h", windowLabel: "5 Hour", durationMilliseconds: 18_000_000),
+                quota(id: "weekly", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000),
+                quota(id: "weekly-fable", windowID: "7d-fable", windowLabel: "7 Day (Fable)", durationMilliseconds: 604_800_000),
+                quota(id: "monthly", windowID: "30d", windowLabel: "30 Day", durationMilliseconds: 2_592_000_000)
+            ])
+        ])
+        let keys = try pinKeys(of: snapshot.reports[0])
+
+        XCTAssertEqual(windowTags(pinning: [keys[0], keys[1]], in: snapshot), ["5h", "7d"])
+        XCTAssertEqual(windowTags(pinning: [keys[0], keys[1], keys[2]], in: snapshot), ["5h", "7d", "7d"])
+        XCTAssertEqual(windowTags(pinning: [keys[1], keys[3]], in: snapshot), ["7d", "30d"])
+    }
+
+    func testWindowTagStaysHiddenWhenOneAccountsPinsShareALength() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "weekly", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000),
+                quota(id: "weekly-fable", windowID: "7d-fable", windowLabel: "7 Day (Fable)", durationMilliseconds: 604_800_000)
+            ])
+        ])
+        let keys = try pinKeys(of: snapshot.reports[0])
+
+        XCTAssertEqual(windowTags(pinning: keys, in: snapshot), [nil, nil])
+        XCTAssertEqual(windowTags(pinning: [keys[0]], in: snapshot), [nil])
+    }
+
+    func testWindowTagStaysHiddenWhenEachAccountPinsOneWindowEvenIfTheLengthsDiffer() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [quota(id: "session", windowID: "5h", durationMilliseconds: 18_000_000)]),
+            report(accountID: "claude-b", quotas: [quota(id: "weekly", windowID: "7d", durationMilliseconds: 604_800_000)])
+        ])
+        let keys = try pinKeys(in: snapshot)
+
+        XCTAssertEqual(windowTags(pinning: keys, in: snapshot), [nil, nil])
+    }
+
+    func testWindowTagFallsBackToTheLabelInitialWhenTheDurationIsNull() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "weekly", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000),
+                quota(id: "monthly", windowID: "monthly", windowLabel: "Monthly", durationMilliseconds: nil)
+            ])
+        ])
+        let keys = try pinKeys(of: snapshot.reports[0])
+
+        XCTAssertEqual(windowTags(pinning: [keys[0], keys[1]], in: snapshot), ["7d", "M"])
+        XCTAssertEqual(windowTags(pinning: [keys[1], keys[0]], in: snapshot), ["M", "7d"])
+    }
+
+    func testWindowsWithoutADurationShareALengthOnlyWhenTheyShareAnIdentity() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "monthly", windowID: "monthly", windowLabel: "Monthly", durationMilliseconds: nil),
+                quota(id: "quarterly", windowID: "quarterly", windowLabel: "Quarterly", durationMilliseconds: nil),
+                quota(id: "monthly-fable", windowID: "monthly", windowLabel: "Monthly (Fable)", durationMilliseconds: nil)
+            ])
+        ])
+        let keys = try pinKeys(of: snapshot.reports[0])
+
+        XCTAssertEqual(windowTags(pinning: [keys[0], keys[1]], in: snapshot), ["M", "Q"])
+        XCTAssertEqual(windowTags(pinning: [keys[0], keys[2]], in: snapshot), [nil, nil])
+    }
+
+    func testMissingSlotNeverGetsAWindowTagAndAddsNoLength() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", windowID: "5h", durationMilliseconds: 18_000_000),
+                quota(id: "weekly", windowID: "7d", durationMilliseconds: 604_800_000)
+            ])
+        ])
+        let keys = try pinKeys(of: snapshot.reports[0])
+        let departed = try pinKeys(in: UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [quota(id: "monthly", windowID: "30d", durationMilliseconds: 2_592_000_000)])
+        ]))[0]
+
+        XCTAssertEqual(windowTags(pinning: [keys[0], departed], in: snapshot), [nil, nil])
+        XCTAssertEqual(windowTags(pinning: [keys[0], keys[1], departed], in: snapshot), ["5h", "7d", nil])
+    }
+
+    func testSlotWithoutAWindowNeverGetsAWindowTagAndAddsNoLength() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", windowID: "5h", durationMilliseconds: 18_000_000),
+                quota(id: "weekly", windowID: "7d", durationMilliseconds: 604_800_000),
+                quota(id: "unwindowed", windowID: nil)
+            ])
+        ])
+        let account = snapshot.reports[0]
+        func tags(of quotas: [UsageQuota]) -> [String?] {
+            let slots = quotas.map { MenuBarSlot.pinned(SelectedQuota(report: account, quota: $0, accountNumber: 1)) }
+            return MenuBarBadge.badges(for: slots, now: timestamp).map(\.windowTag)
+        }
+
+        XCTAssertEqual(tags(of: [account.quotas[0], account.quotas[2]]), [nil, nil])
+        XCTAssertEqual(tags(of: account.quotas), ["5h", "7d", nil])
+    }
+
     func testGaugeReadsUsedFractionClampsItAndKeepsUnknownDistinct() {
         func amount(usedFraction: Double?, remainingFraction: Double? = nil) -> UsageAmount {
             UsageAmount(
@@ -375,7 +476,7 @@ final class UsageDomainTests: XCTestCase {
 
         let badges = MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: MenuBarPins().toggling(key)), now: timestamp)
 
-        XCTAssertEqual(badges, [MenuBarBadge(letter: "M", accountNumber: nil, gauge: .missing, isStale: false)])
+        XCTAssertEqual(badges, [MenuBarBadge(letter: "M", accountNumber: nil, gauge: .missing, isStale: false, windowTag: nil)])
     }
 
     func testBadgeTurnsStaleWhenProviderDataReachesTheStaleBoundary() throws {
@@ -453,9 +554,17 @@ final class UsageDomainTests: XCTestCase {
         try report.quotas.map { try XCTUnwrap($0.pinKey) }
     }
 
-    private func accountNumbers(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [Int?] {
+    private func pinnedBadges(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [MenuBarBadge] {
         let pins = keys.reduce(MenuBarPins()) { $0.toggling($1) }
-        return MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: pins), now: timestamp).map(\.accountNumber)
+        return MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: pins), now: timestamp)
+    }
+
+    private func accountNumbers(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [Int?] {
+        pinnedBadges(pinning: keys, in: snapshot).map(\.accountNumber)
+    }
+
+    private func windowTags(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [String?] {
+        pinnedBadges(pinning: keys, in: snapshot).map(\.windowTag)
     }
 
     private func described(_ slots: [MenuBarSlot]) -> [String] {
@@ -569,20 +678,72 @@ final class MenuBarBadgeRendererTests: XCTestCase {
         XCTAssertEqual(upperRows.max() ?? 1, 0, accuracy: 0.01)
     }
 
-    private func badge(_ gauge: BadgeGauge, number: Int? = nil, isStale: Bool = false) -> MenuBarBadge {
-        MenuBarBadge(letter: "I", accountNumber: number, gauge: gauge, isStale: isStale)
+    func testTagWidensTheBadgeByTheMeasuredTagColumn() {
+        let plain = MenuBarBadgeRenderer.image(for: [badge(.used(0.5))])
+        let tagged = MenuBarBadgeRenderer.image(for: [badge(.used(0.5), tag: "7d")])
+        let longer = MenuBarBadgeRenderer.image(for: [badge(.used(0.5), tag: "30d")])
+
+        XCTAssertEqual(plain.size.width, 14)
+        XCTAssertEqual(tagged.size.width - plain.size.width, measuredTagColumn("7d"))
+        XCTAssertEqual(longer.size.width - plain.size.width, measuredTagColumn("30d"))
+    }
+
+    func testTagAndAccountNumberShareOneColumnAsWideAsTheWiderOfTheTwo() {
+        func width(number: Int?, tag: String?) -> CGFloat {
+            MenuBarBadgeRenderer.image(for: [badge(.used(0.5), number: number, tag: tag)]).size.width
+        }
+        let digitColumn = width(number: 8, tag: nil) - 14
+
+        XCTAssertGreaterThan(digitColumn, measuredTagColumn("I"))
+        XCTAssertLessThan(digitColumn, measuredTagColumn("30d"))
+        XCTAssertEqual(width(number: 8, tag: "I"), 14 + digitColumn)
+        XCTAssertEqual(width(number: 8, tag: "30d"), 14 + measuredTagColumn("30d"))
+    }
+
+    func testTagInkSitsInTheTopHalfAndAccountNumberInkInTheBottomHalf() throws {
+        let tagOnly = try render([badge(.used(0.5), tag: "7d")])
+        let numberOnly = try render([badge(.used(0.5), number: 8)])
+        let both = try render([badge(.used(0.5), number: 8, tag: "7d")])
+        let topHalf = 0..<16
+        let bottomHalf = 16..<32
+
+        XCTAssertGreaterThan(tagOnly.peakAlpha(columns: 30..<tagOnly.width, rows: topHalf), 0.5)
+        XCTAssertEqual(tagOnly.peakAlpha(columns: 30..<tagOnly.width, rows: bottomHalf), 0, accuracy: 0.01)
+        XCTAssertGreaterThan(numberOnly.peakAlpha(columns: 30..<numberOnly.width, rows: bottomHalf), 0.5)
+        XCTAssertEqual(numberOnly.peakAlpha(columns: 30..<numberOnly.width, rows: topHalf), 0, accuracy: 0.01)
+        XCTAssertGreaterThan(both.peakAlpha(columns: 30..<both.width, rows: topHalf), 0.5)
+        XCTAssertGreaterThan(both.peakAlpha(columns: 30..<both.width, rows: bottomHalf), 0.5)
+    }
+
+    func testStaleBadgeDimsItsWindowTagLikeItsAccountNumber() throws {
+        let fresh = try render([badge(.used(0.5), tag: "7d")])
+        let stale = try render([badge(.used(0.5), isStale: true, tag: "7d")])
+        let tagColumns = 30..<fresh.width
+        let topHalf = 0..<16
+
+        let dimming = stale.peakAlpha(columns: tagColumns, rows: topHalf) / fresh.peakAlpha(columns: tagColumns, rows: topHalf)
+        XCTAssertEqual(dimming, 0.55, accuracy: 0.03)
+    }
+
+    private func badge(_ gauge: BadgeGauge, number: Int? = nil, isStale: Bool = false, tag: String? = nil) -> MenuBarBadge {
+        MenuBarBadge(letter: "I", accountNumber: number, gauge: gauge, isStale: isStale, windowTag: tag)
     }
 
     private struct Pixels {
         let bytes: [UInt8]
         let bytesPerRow: Int
+        let width: Int
 
         func alpha(x: Int, row: Int) -> Double {
             Double(bytes[row * bytesPerRow + x * 4 + 3]) / 255
         }
 
         func peakAlpha(columns: Range<Int>) -> Double {
-            (0..<bytes.count / bytesPerRow).flatMap { row in columns.map { alpha(x: $0, row: row) } }.max() ?? 0
+            peakAlpha(columns: columns, rows: 0..<bytes.count / bytesPerRow)
+        }
+
+        func peakAlpha(columns: Range<Int>, rows: Range<Int>) -> Double {
+            rows.flatMap { row in columns.map { alpha(x: $0, row: row) } }.max() ?? 0
         }
     }
 
@@ -606,7 +767,13 @@ final class MenuBarBadgeRendererTests: XCTestCase {
         NSGraphicsContext.restoreGraphicsState()
         let data = try XCTUnwrap(bitmap.data)
         let buffer = UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: bitmap.bytesPerRow * height)
-        return Pixels(bytes: Array(buffer), bytesPerRow: bitmap.bytesPerRow)
+        return Pixels(bytes: Array(buffer), bytesPerRow: bitmap.bytesPerRow, width: bitmap.width)
+    }
+
+    private func measuredTagColumn(_ tag: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: 7, weight: .bold)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: tag, attributes: [.font: font]) as CFAttributedString)
+        return (1 + CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))).rounded()
     }
 
     private func sampledShare(of geometry: RoundedSquareGeometry, below height: CGFloat) -> Double {

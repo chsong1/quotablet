@@ -53,12 +53,16 @@ A badge is a 14 pt rounded square with the provider's initial in a heavy system 
 
 A badge shows a small account number only when the number tells accounts apart. If a provider's pinned quotas come from two or more accounts, each of those badges shows the number of its account. The number matches the `N` in the panel's `Account N` label. If every pinned quota of a provider comes from one account, none of those badges shows a number. A missing pin never shows a number and does not count as an account. With nothing pinned, the menu bar shows the first quota in provider order, and the panel marks it as selected by default. With no quota available, the menu bar shows the `gauge.with.dots.needle.33percent` symbol.
 
+A badge shows a small window tag only when the tag tells windows apart. If one account pins quotas with two or more window lengths, each badge of that account shows the length of its window, so the 5-hour and 7-day quotas of one Claude account read `5h` and `7d`. If an account pins one quota, or all its pinned quotas share one length, none of its badges shows a tag. Two quotas of the same length, such as `7 Day` and `7 Day (Fable)`, count as one length. A missing pin never shows a tag and does not count toward the lengths.
+
+The tag text is the window's duration in compact form, such as `5h`, `7d`, or `30d`. A window with no duration shows the first letter of its label in capitals, so a window labeled `Monthly` shows `M`. The tag sits right of the badge, aligned with its top edge, and the account number stays aligned with the bottom edge. A stale badge dims its tag the same way it dims the account number. The summary card's row list draws the same badge image, so its rows show the tag. The petals in the chart show only the letter and account number, because the legend row already shows the quota label.
+
 A badge has one of four looks.
 
 - **Fresh.** The unused part is drawn at 30% opacity and the used part at full opacity.
 - **Stale.** Provider data is 15 minutes old or older. The badge dims and 1 pt stripes cross the filled part. The stripes keep an exhausted stale quota from looking like a fresh, unused one. An unknown badge dims by the same proportion when its data is stale. It has no fill, so it has no stripes.
 - **Unknown.** The quota has no usable usage figure. The badge is a 1 pt outline with a solid letter and no fill, so it never reads as 0% or 100%.
-- **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. The panel shows "Pinned quota unavailable" with a **Remove** button.
+- **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. In the summary card's row list, the row says "Pinned quota unavailable" and has a **Remove** button. In the petal chart, the legend row says "Unavailable" and has the same button. VoiceOver reads "Pinned quota unavailable" in both layouts.
 
 **Summary card.** The card at the top of the panel repeats your pins. It shows one row per quota when it holds 1 or 2 quotas, or more than 8. With 3 to 8 pinned quotas it draws a petal chart and a legend instead, so 8 pins take 200 pt of height and the card does not grow with each pin.
 
