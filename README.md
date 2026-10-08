@@ -53,6 +53,10 @@ A badge is a 14 pt rounded square with the provider's initial in a heavy system 
 
 A badge shows a small account number only when the number tells accounts apart. If a provider's pinned quotas come from two or more accounts, each of those badges shows the number of its account. The number matches the `N` in the panel's `Account N` label. If every pinned quota of a provider comes from one account, none of those badges shows a number. A missing pin never shows a number and does not count as an account. With nothing pinned, the menu bar shows the first quota in provider order, and the panel marks it as selected by default. With no quota available, the menu bar shows the `gauge.with.dots.needle.33percent` symbol.
 
+A badge shows a small window tag only when the tag tells windows apart. If one account pins quotas with two or more window lengths, each badge of that account shows the length of its window, so the 5-hour and 7-day quotas of one Claude account read `5h` and `7d`. If an account pins one quota, or all its pinned quotas share one length, none of its badges shows a tag. Two quotas of the same length, such as `7 Day` and `7 Day (Fable)`, count as one length. A missing pin never shows a tag and does not count toward the lengths.
+
+The tag text is the window's duration in compact form, such as `5h`, `7d`, or `30d`. A window with no duration shows the first letter of its label in capitals, so a window labeled `Monthly` shows `M`. The tag sits right of the badge, aligned with its top edge, and the account number stays aligned with the bottom edge. A stale badge dims its tag the same way it dims the account number. The summary card's row list draws the same badge image, so its rows show the tag. The petals in the chart show only the letter and account number, because the legend row already shows the quota label.
+
 A badge has one of four looks.
 
 - **Fresh.** The unused part is drawn at 30% opacity and the used part at full opacity.

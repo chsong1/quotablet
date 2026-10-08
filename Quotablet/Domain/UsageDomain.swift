@@ -133,6 +133,11 @@ struct QuotaWindowIdentity: Codable, Hashable, Sendable {
 }
 
 struct QuotaWindow: Codable, Equatable, Sendable {
+    enum LengthKey: Hashable, Sendable {
+        case duration(Double)
+        case identityID(String)
+    }
+
     let identity: QuotaWindowIdentity
     let label: String
     let durationMilliseconds: Double?
@@ -145,6 +150,15 @@ struct QuotaWindow: Codable, Equatable, Sendable {
         guard let duration = UsageFormatting.compactDuration(milliseconds: durationMilliseconds) else { return name }
         guard !name.localizedCaseInsensitiveContains(duration) else { return name }
         return "\(name) · \(duration)"
+    }
+
+    // A window without a duration has no length to compare, so its identity stands in.
+    var lengthKey: LengthKey {
+        durationMilliseconds.map(LengthKey.duration) ?? .identityID(identity.id)
+    }
+
+    var tagText: String {
+        UsageFormatting.compactDuration(milliseconds: durationMilliseconds) ?? String(displayName.prefix(1)).uppercased()
     }
 }
 
@@ -350,23 +364,30 @@ struct MenuBarBadge: Equatable, Sendable {
     let accountNumber: Int?
     let gauge: BadgeGauge
     let isStale: Bool
+    let windowTag: String?
 
     static func badges(for slots: [MenuBarSlot], now: Date) -> [MenuBarBadge] {
+        let selections = slots.compactMap(\.selected)
         // The number only tells accounts apart, so a provider's slots show one only when they span two or more accounts.
-        let accountsByProvider = Dictionary(grouping: slots.compactMap(\.selected), by: { $0.report.provider })
+        let accountsByProvider = Dictionary(grouping: selections, by: { $0.report.provider })
             .mapValues { Set($0.map(\.accountNumber)) }
+        // The tag only tells window lengths apart, so an account's slots show one only when they span two or more lengths.
+        let lengthsByAccount = Dictionary(grouping: selections, by: { $0.report.id })
+            .mapValues { Set($0.compactMap(\.quota.window?.lengthKey)) }
         return slots.map { slot -> MenuBarBadge in
             let letter = ProviderRegistry.badgeLetter(for: slot.provider)
             guard let selection = slot.selected else {
-                return MenuBarBadge(letter: letter, accountNumber: nil, gauge: .missing, isStale: false)
+                return MenuBarBadge(letter: letter, accountNumber: nil, gauge: .missing, isStale: false, windowTag: nil)
             }
             let freshness = UsageFreshness(origin: nil, fetchedAt: selection.report.fetchedAt, refreshStatus: .idle)
             let spansAccounts = accountsByProvider[selection.report.provider, default: []].count > 1
+            let spansLengths = lengthsByAccount[selection.report.id, default: []].count > 1
             return MenuBarBadge(
                 letter: letter,
                 accountNumber: spansAccounts ? selection.accountNumber : nil,
                 gauge: BadgeGauge(amount: selection.quota.amount),
-                isStale: freshness.isStale(at: now)
+                isStale: freshness.isStale(at: now),
+                windowTag: spansLengths ? selection.quota.window?.tagText : nil
             )
         }
     }
