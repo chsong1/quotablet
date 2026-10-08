@@ -58,7 +58,7 @@ A badge has one of four looks.
 - **Fresh.** The unused part is drawn at 30% opacity and the used part at full opacity.
 - **Stale.** Provider data is 15 minutes old or older. The badge dims and 1 pt stripes cross the filled part. The stripes keep an exhausted stale quota from looking like a fresh, unused one. An unknown badge dims by the same proportion when its data is stale. It has no fill, so it has no stripes.
 - **Unknown.** The quota has no usable usage figure. The badge is a 1 pt outline with a solid letter and no fill, so it never reads as 0% or 100%.
-- **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. The panel shows "Pinned quota unavailable" with a **Remove** button.
+- **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. In the summary card's row list, the row says "Pinned quota unavailable" and has a **Remove** button. In the petal chart, the legend row says "Unavailable" and has the same button. VoiceOver reads "Pinned quota unavailable" in both layouts.
 
 **Summary card.** The card at the top of the panel repeats your pins. It shows one row per quota when it holds 1 or 2 quotas, or more than 8. With 3 to 8 pinned quotas it draws a petal chart and a legend instead, so 8 pins take 200 pt of height and the card does not grow with each pin.
 
