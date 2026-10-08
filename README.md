@@ -60,7 +60,22 @@ A badge has one of four looks.
 - **Unknown.** The quota has no usable usage figure. The badge is a 1 pt outline with a solid letter and no fill, so it never reads as 0% or 100%.
 - **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. The panel shows "Pinned quota unavailable" with a **Remove** button.
 
-**No company logos.** Badges use a system-font letter on a system shape. Quotablet does not draw, trace, embed, or download any company logo. Anthropic, OpenAI, and xAI publish brand rules that forbid altering their logos, and a usage gauge alters a logo by filling and recoloring it. This repository is also public.
+**Summary card.** The card at the top of the panel repeats your pins. It shows one row per quota when it holds 1 or 2 quotas, or more than 8. With 3 to 8 pinned quotas it draws a petal chart and a legend instead, so 8 pins take 200 pt of height and the card does not grow with each pin.
+
+The chart has one petal per pin, in the order you pinned them. The first petal points at 12 o'clock and the others follow clockwise. Each petal fills outward from the center hole over a pale track of its own color. The fill covers the used share of the petal's area, not of its length, because a petal widens outward and its length would skew the reading. Each petal carries the badge's letter and account number. When the used share changes, the fill grows or shrinks over 0.35 seconds.
+
+A petal has the same four looks as a badge.
+
+- **Fresh.** The track holds the whole petal at 22% opacity. The fill covers the used share in the petal's color, and the letter is white.
+- **Stale.** The fill is desaturated, drawn at 55% opacity, and crossed by 1.5 pt horizontal stripes. The track stays and the letter stays white.
+- **Unknown.** The petal has no track and no fill. It is a 1.5 pt outline in the petal's color, and the letter takes that color. Both dim by the same proportion when the data is stale.
+- **Missing.** The petal has no fill. It is a dashed 1.5 pt outline and a letter in gray. The legend row says "Unavailable" and keeps the **Remove** button.
+
+Petal colors come from a fixed list, assigned in pin order: blue, orange, green, purple, pink, teal, indigo, and yellow. A color only tells petals apart. The letters and the legend identify the quota.
+
+The legend sits to the right of the chart with one row per pin, in pin order. A row shows a dot in the petal's color, the letter and account number, the quota label, and the remaining amount. A stale row adds "Stale" in orange after the label. One line under the chart and legend shows the age of the oldest report among the pins. VoiceOver reads the chart as one element, "Usage chart, N pinned quotas". It reads each legend row as one element with the same text as the menu bar label, plus "stale" for a stale row.
+
+**No company logos.** Badges and petals use a system-font letter on a system shape, and petal colors come from the generic list above, never from a provider's brand colors. Quotablet does not draw, trace, embed, or download any company logo. Anthropic, OpenAI, and xAI publish brand rules that forbid altering their logos, and a usage gauge alters a logo by filling and recoloring it. This repository is also public.
 
 **Account labels.** Account names and identifiers stay hidden by default and show as `Account N` per provider. Reveal is session-only and is not written to disk.
 

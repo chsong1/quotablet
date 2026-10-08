@@ -70,26 +70,32 @@ final class UsageStore {
 
     func menuBarAccessibilityLabel(now: Date) -> String {
         let slots = menuBarSlots
-        let oldestFetch = slots.compactMap { $0.selected?.report.fetchedAt }.min()
-        let collectionFreshness = freshness(fetchedAt: oldestFetch).displayLabel(now: now)
+        let collectionFreshness = freshness(of: slots).displayLabel(now: now)
         guard !slots.isEmpty else {
             return "Quotablet. No quota is available for the menu bar. \(collectionFreshness)"
         }
-        let descriptions = slots.map { slot -> String in
-            switch slot {
-            case .pinned(let selection):
-                return Self.slotDescription(of: selection)
-            case .defaulted(let selection):
-                return "Selected by default, \(Self.slotDescription(of: selection))"
-            case .missing:
-                return "Pinned quota unavailable"
-            }
-        }
+        let descriptions = slots.map(Self.accessibilityDescription(of:))
         return "\(descriptions.joined(separator: "; ")). \(collectionFreshness)"
+    }
+
+    static func accessibilityDescription(of slot: MenuBarSlot) -> String {
+        switch slot {
+        case .pinned(let selection):
+            return slotDescription(of: selection)
+        case .defaulted(let selection):
+            return "Selected by default, \(slotDescription(of: selection))"
+        case .missing:
+            return "Pinned quota unavailable"
+        }
     }
 
     func freshness(for report: UsageReport?) -> UsageFreshness {
         freshness(fetchedAt: report?.fetchedAt)
+    }
+
+    // The slots share one freshness: the oldest report among them sets it.
+    func freshness(of slots: [MenuBarSlot]) -> UsageFreshness {
+        freshness(fetchedAt: slots.compactMap { $0.selected?.report.fetchedAt }.min())
     }
 
     private func freshness(fetchedAt: Date?) -> UsageFreshness {
