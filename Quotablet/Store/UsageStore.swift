@@ -26,7 +26,7 @@ final class UsageStore {
     private(set) var lastError: OMPClientError?
     private(set) var persistenceWarning = false
     private(set) var executablePath: String?
-    private(set) var pinnedQuota: QuotaPinKey?
+    private(set) var pinnedQuotas = MenuBarPins()
     private(set) var revealsIdentifiers = false
     private(set) var presentationDate = Date()
 
@@ -59,52 +59,40 @@ final class UsageStore {
         }
     }
 
-    var summarySelection: SummarySelection {
-        guard let snapshot else {
-            return pinnedQuota == nil ? .none : .unavailable
-        }
-        return snapshot.summarySelection(pinnedKey: pinnedQuota)
+    var menuBarSlots: [MenuBarSlot] {
+        guard let snapshot else { return pinnedQuotas.keys.map(MenuBarSlot.missing) }
+        return snapshot.menuBarSlots(pins: pinnedQuotas)
     }
 
-    var summaryFreshness: UsageFreshness {
-        switch summarySelection {
-        case .pinned(let selection), .defaulted(let selection):
-            return freshness(for: selection.report)
-        case .unavailable, .none:
-            return freshness(for: nil)
-        }
-    }
-
-    func menuBarTitle(now: Date) -> String {
-        let freshness = summaryFreshness.compactIndicator(now: now).map { " · \($0)" } ?? ""
-        switch summarySelection {
-        case .pinned(let selection), .defaulted(let selection):
-            let provider = UsageFormatting.providerName(selection.report.provider)
-            let window = selection.quota.window?.compactDisplayName ?? "Window"
-            let remaining = UsageFormatting.remainingText(selection.quota.amount)
-            return "\(provider) · \(window) · \(remaining)\(freshness)"
-        case .unavailable:
-            return "Pinned unavailable\(freshness)"
-        case .none:
-            return "Quotablet\(freshness)"
-        }
+    func menuBarBadges(now: Date) -> [MenuBarBadge] {
+        MenuBarBadge.badges(for: menuBarSlots, now: now)
     }
 
     func menuBarAccessibilityLabel(now: Date) -> String {
-        let freshness = summaryFreshness.displayLabel(now: now)
-        switch summarySelection {
-        case .pinned(let selection):
-            return "Pinned \(UsageFormatting.providerName(selection.report.provider)), \(selection.quota.label), \(selection.quota.windowDisplayName), \(UsageFormatting.remainingText(selection.quota.amount)), \(freshness)"
-        case .defaulted(let selection):
-            return "Selected by default for the menu bar, \(UsageFormatting.providerName(selection.report.provider)), \(selection.quota.label), \(selection.quota.windowDisplayName), \(UsageFormatting.remainingText(selection.quota.amount)), \(freshness)"
-        case .unavailable:
-            return "Pinned quota unavailable. No replacement is selected. \(freshness)"
-        case .none:
-            return "Quotablet. No quota is available for the menu bar summary. \(freshness)"
+        let slots = menuBarSlots
+        let oldestFetch = slots.compactMap { $0.selected?.report.fetchedAt }.min()
+        let collectionFreshness = freshness(fetchedAt: oldestFetch).displayLabel(now: now)
+        guard !slots.isEmpty else {
+            return "Quotablet. No quota is available for the menu bar. \(collectionFreshness)"
         }
+        let descriptions = slots.map { slot -> String in
+            switch slot {
+            case .pinned(let selection):
+                return Self.slotDescription(of: selection)
+            case .defaulted(let selection):
+                return "Selected by default, \(Self.slotDescription(of: selection))"
+            case .missing:
+                return "Pinned quota unavailable"
+            }
+        }
+        return "\(descriptions.joined(separator: "; ")). \(collectionFreshness)"
     }
 
     func freshness(for report: UsageReport?) -> UsageFreshness {
+        freshness(fetchedAt: report?.fetchedAt)
+    }
+
+    private func freshness(fetchedAt: Date?) -> UsageFreshness {
         let refreshStatus: UsageRefreshStatus
         if isRefreshing {
             refreshStatus = .refreshing
@@ -115,7 +103,7 @@ final class UsageStore {
         }
         return UsageFreshness(
             origin: snapshotOrigin,
-            fetchedAt: report?.fetchedAt,
+            fetchedAt: fetchedAt,
             refreshStatus: refreshStatus
         )
     }
@@ -127,7 +115,7 @@ final class UsageStore {
         guard !isShuttingDown else { return }
 
         executablePath = Self.normalizedPath(stored.settings.executablePath)
-        pinnedQuota = stored.settings.pinnedQuota
+        pinnedQuotas = stored.settings.pinnedQuotas
         snapshot = stored.snapshot
         snapshotOrigin = stored.snapshot == nil ? nil : .cached
         presentationTask = Task { @MainActor [weak self] in
@@ -183,9 +171,15 @@ final class UsageStore {
         }
     }
 
-    func setPinnedQuota(_ key: QuotaPinKey?) async {
+    func togglePin(_ key: QuotaPinKey) async {
         guard !isShuttingDown else { return }
-        pinnedQuota = key
+        pinnedQuotas = pinnedQuotas.toggling(key)
+        await persistSettings()
+    }
+
+    func removePin(_ key: QuotaPinKey) async {
+        guard !isShuttingDown else { return }
+        pinnedQuotas = pinnedQuotas.removing(key)
         await persistSettings()
     }
 
@@ -290,10 +284,17 @@ final class UsageStore {
     }
 
     private func persistSettings() async {
-        let settings = PersistedSettings(executablePath: executablePath, pinnedQuota: pinnedQuota)
+        let settings = PersistedSettings(executablePath: executablePath, pinnedQuotas: pinnedQuotas)
         if !(await persistence.save(settings: settings)) {
             persistenceWarning = true
         }
+    }
+
+    private static func slotDescription(of selection: SelectedQuota) -> String {
+        let provider = ProviderRegistry.displayName(for: selection.report.provider)
+        let account = UsageFormatting.accountAlias(selection.accountNumber)
+        let remaining = UsageFormatting.remainingText(selection.quota.amount)
+        return "\(provider) \(account), \(selection.quota.label), \(remaining)"
     }
 
     private static func normalizedPath(_ path: String?) -> String? {

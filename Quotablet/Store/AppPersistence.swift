@@ -3,7 +3,23 @@ import Foundation
 
 struct PersistedSettings: Codable, Equatable, Sendable {
     var executablePath: String?
-    var pinnedQuota: QuotaPinKey?
+    var pinnedQuotas: MenuBarPins
+
+    init(executablePath: String?, pinnedQuotas: MenuBarPins) {
+        self.executablePath = executablePath
+        self.pinnedQuotas = pinnedQuotas
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
+        pinnedQuotas = try container.decodeIfPresent(MenuBarPins.self, forKey: .pinnedQuotas) ?? MenuBarPins()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case executablePath
+        case pinnedQuotas
+    }
 }
 
 struct StoredApplicationState: Sendable {
@@ -58,7 +74,7 @@ final class AppPersistence: @unchecked Sendable {
     }
 
     private func loadSynchronously() -> StoredApplicationState {
-        var settings = PersistedSettings(executablePath: nil, pinnedQuota: nil)
+        var settings = PersistedSettings(executablePath: nil, pinnedQuotas: MenuBarPins())
         if let data = try? Data(contentsOf: settingsURL),
            let decoded = try? JSONDecoder().decode(PersistedSettings.self, from: data) {
             settings = decoded

@@ -10,7 +10,7 @@ final class UsageStoreTests: XCTestCase {
         let cached = sampleSnapshot(accountID: "acct-cached")
         let pin = try XCTUnwrap(cached.reports.first?.quotas.first?.pinKey)
         let savedSnapshot = await persistence.save(snapshot: cached)
-        let savedSettings = await persistence.save(settings: PersistedSettings(executablePath: nil, pinnedQuota: pin))
+        let savedSettings = await persistence.save(settings: PersistedSettings(executablePath: nil, pinnedQuotas: MenuBarPins().toggling(pin)))
         XCTAssertTrue(savedSnapshot)
         XCTAssertTrue(savedSettings)
         let directoryMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
@@ -28,14 +28,14 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot, cached)
         XCTAssertEqual(store.snapshotOrigin, .cached)
         XCTAssertEqual(store.lastError, .timedOut)
-        XCTAssertEqual(store.pinnedQuota, pin)
+        XCTAssertEqual(store.pinnedQuotas.keys, [pin])
 
         await store.refresh()
         XCTAssertEqual(store.snapshot, empty)
         XCTAssertEqual(store.snapshotOrigin, .live)
         XCTAssertNil(store.lastError)
-        XCTAssertEqual(store.pinnedQuota, pin)
-        XCTAssertEqual(store.summarySelection, .unavailable)
+        XCTAssertEqual(store.pinnedQuotas.keys, [pin])
+        XCTAssertEqual(store.menuBarSlots, [.missing(pin)])
 
         await store.shutdown()
     }
@@ -146,7 +146,74 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertFalse(store.isRefreshing)
     }
 
+    func testSettingsRoundTripKeepsPinOrderAndAFileWithoutPinsDecodesToNone() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = AppPersistence(directoryURL: directory)
+        let keys = try sampleSnapshot(accountIDs: ["acct-a", "acct-b"]).reports.map { try XCTUnwrap($0.quotas.first?.pinKey) }
+        let pins = MenuBarPins().toggling(keys[1]).toggling(keys[0])
+
+        let saved = await persistence.save(settings: PersistedSettings(executablePath: "/custom/omp", pinnedQuotas: pins))
+        let reloaded = await persistence.load()
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(reloaded.settings.pinnedQuotas.keys, [keys[1], keys[0]])
+        XCTAssertEqual(reloaded.settings.executablePath, "/custom/omp")
+
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        try Data(#"{"executablePath":"/custom/omp","pinnedQuota":"legacy"}"#.utf8).write(to: settingsURL)
+        let legacy = await persistence.load()
+        XCTAssertEqual(legacy.settings.pinnedQuotas.keys, [])
+        XCTAssertEqual(legacy.settings.executablePath, "/custom/omp")
+
+        try Data("{}".utf8).write(to: settingsURL)
+        let empty = await persistence.load()
+        XCTAssertEqual(empty.settings.pinnedQuotas.keys, [])
+        XCTAssertNil(empty.settings.executablePath)
+    }
+
+    func testTogglingAndRemovingPinsUpdatesSlotsAndPersistsTheOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = AppPersistence(directoryURL: directory)
+        let snapshot = sampleSnapshot(accountIDs: ["acct-a", "acct-b"])
+        let keys = try snapshot.reports.map { try XCTUnwrap($0.quotas.first?.pinKey) }
+        let fetcher = SequencedFetcher([.success(snapshot)])
+        let store = UsageStore(persistence: persistence) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+
+        XCTAssertEqual(store.menuBarSlots, [])
+        await store.togglePin(keys[1])
+        XCTAssertEqual(store.menuBarSlots, [.missing(keys[1])])
+
+        await store.refresh()
+        await store.togglePin(keys[0])
+        XCTAssertEqual(store.menuBarSlots.compactMap { $0.selected?.quota.pinKey }, [keys[1], keys[0]])
+        let afterAdding = await persistence.load()
+        XCTAssertEqual(afterAdding.settings.pinnedQuotas.keys, [keys[1], keys[0]])
+
+        await store.removePin(keys[1])
+        XCTAssertEqual(store.menuBarSlots.compactMap { $0.selected?.quota.pinKey }, [keys[0]])
+        let afterRemoving = await persistence.load()
+        XCTAssertEqual(afterRemoving.settings.pinnedQuotas.keys, [keys[0]])
+
+        await store.shutdown()
+    }
+
     private func sampleSnapshot(accountID: String) -> UsageSnapshot {
+        sampleSnapshot(accountIDs: [accountID])
+    }
+
+    private func sampleSnapshot(accountIDs: [String]) -> UsageSnapshot {
+        UsageSnapshot(
+            generatedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            receivedAt: Date(timeIntervalSince1970: 1_800_000_001),
+            reportDrafts: accountIDs.map { sampleReport(accountID: $0) }
+        )
+    }
+
+    private func sampleReport(accountID: String) -> UsageReportDraft {
         let amount = UsageAmount(used: 20, limit: 100, remaining: 80, usedFraction: 0.2, remainingFraction: 0.8, unit: .percent)
         let scope = QuotaScope(
             provider: "anthropic",
@@ -172,18 +239,13 @@ final class UsageStoreTests: XCTestCase {
             status: .available,
             resetsAt: nil
         )
-        let report = UsageReportDraft(
+        return UsageReportDraft(
             provider: "anthropic",
             sourceAccount: SourceAccountIdentity(accountID: accountID, organizationID: nil, projectID: nil),
             privateDisplayLabel: "synthetic@example.invalid",
             fetchedAt: Date(timeIntervalSince1970: 1_800_000_000),
             resetCredits: 0,
             quotas: [quota]
-        )
-        return UsageSnapshot(
-            generatedAt: Date(timeIntervalSince1970: 1_800_000_000),
-            receivedAt: Date(timeIntervalSince1970: 1_800_000_001),
-            reportDrafts: [report]
         )
     }
 }
