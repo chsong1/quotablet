@@ -122,7 +122,8 @@ struct UsagePanel: View {
     private func menuBarSelection(now: Date) -> some View {
         let slots = store.menuBarSlots
         let badges = store.menuBarBadges(now: now)
-        return VStack(alignment: .leading, spacing: 7) {
+        let layout = SummaryLayout.forSlotCount(slots.count)
+        return VStack(alignment: .leading, spacing: layout.cardSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "pin.fill")
                     .font(.system(size: 10, weight: .semibold))
@@ -144,19 +145,31 @@ struct UsagePanel: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                ForEach(Array(zip(slots, badges).enumerated()), id: \.offset) { _, pair in
-                    MenuBarSlotRow(
-                        slot: pair.0,
-                        badge: pair.1,
-                        accountLabel: pair.0.selected.map { accountLabel(for: $0.report, number: $0.accountNumber) },
-                        freshness: store.freshness(for: pair.0.selected?.report),
+                switch layout {
+                case .list:
+                    ForEach(Array(zip(slots, badges).enumerated()), id: \.offset) { _, pair in
+                        MenuBarSlotRow(
+                            slot: pair.0,
+                            badge: pair.1,
+                            accountLabel: pair.0.selected.map { accountLabel(for: $0.report, number: $0.accountNumber) },
+                            freshness: store.freshness(for: pair.0.selected?.report),
+                            now: now,
+                            onRemove: { key in Task { await store.removePin(key) } }
+                        )
+                    }
+                case .flower:
+                    QuotaFlowerSummary(
+                        slots: slots,
+                        badges: badges,
+                        freshness: store.freshness(of: slots),
                         now: now,
                         onRemove: { key in Task { await store.removePin(key) } }
                     )
                 }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, layout.cardVerticalPadding)
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityIdentifier("quotablet.menu-bar-selection")
     }

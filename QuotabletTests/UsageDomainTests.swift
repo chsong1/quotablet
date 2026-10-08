@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 
 final class UsageDomainTests: XCTestCase {
@@ -626,5 +627,227 @@ final class MenuBarBadgeRendererTests: XCTestCase {
             }
         }
         return Double(filled) / Double(total)
+    }
+}
+
+final class QuotaFlowerTests: XCTestCase {
+    func testLayoutIsAFlowerOnlyForThreeToEightSlots() {
+        let layouts = (0...10).map(SummaryLayout.forSlotCount)
+
+        XCTAssertEqual(layouts, [.list, .list, .list, .flower, .flower, .flower, .flower, .flower, .flower, .list, .list])
+    }
+
+    func testFillRadiusSpansTheInnerToTheOuterEdgeAndGrowsWithTheFraction() {
+        for count in [3, 8] {
+            let petal = PetalGeometry(petalCount: count, index: 0, outerRadius: 75)
+
+            XCTAssertEqual(petal.innerRadius, 18, accuracy: 1e-9)
+            XCTAssertEqual(petal.fillRadius(forUsedFraction: 0), 18, accuracy: 1e-9)
+            XCTAssertEqual(petal.fillRadius(forUsedFraction: 1), 75)
+            XCTAssertEqual(petal.fillRadius(forUsedFraction: -0.5), 18, accuracy: 1e-9)
+            XCTAssertEqual(petal.fillRadius(forUsedFraction: 2), 75)
+            let radii = (0...10).map { petal.fillRadius(forUsedFraction: Double($0) / 10) }
+            for (lower, upper) in zip(radii, radii.dropFirst()) {
+                XCTAssertLessThan(lower, upper, "\(count) petals")
+            }
+        }
+    }
+
+    func testFillRadiusCoversTheFractionOfThePetalAreaNotOfItsLength() {
+        for count in [3, 8] {
+            let petal = PetalGeometry(petalCount: count, index: 0, outerRadius: 75)
+            let fractions = [0.25, 0.5, 0.75]
+            let radii = fractions.map { petal.fillRadius(forUsedFraction: $0) }
+
+            let sample = sampledArea(of: petal, insideDisks: radii)
+
+            for (fraction, covered) in zip(fractions, sample.inside) {
+                XCTAssertEqual(covered / sample.total, fraction, accuracy: 0.01, "\(count) petals at \(fraction)")
+            }
+            XCTAssertGreaterThan(radii[1], 18 + (75 - 18) / 2 + 5, "\(count) petals reach past the linear midpoint")
+        }
+    }
+
+    func testAreaWithinRadiusMatchesASampledGrid() {
+        for count in [3, 8] {
+            let petal = PetalGeometry(petalCount: count, index: 0, outerRadius: 75)
+            let radii: [CGFloat] = [30, 50, 70, 75]
+
+            let sample = sampledArea(of: petal, insideDisks: radii)
+
+            for (radius, covered) in zip(radii, sample.inside) {
+                XCTAssertEqual(Double(petal.area(withinRadius: radius)), covered, accuracy: 0.01 * sample.total, "\(count) petals within \(radius)")
+            }
+            XCTAssertEqual(petal.area(withinRadius: 10), 0)
+            XCTAssertEqual(petal.area(withinRadius: 18), 0, accuracy: 1e-9)
+            XCTAssertEqual(petal.area(withinRadius: 200), petal.area(withinRadius: 75))
+        }
+    }
+
+    func testPetalsOfOneFlowerNeverShareAPoint() {
+        let step: CGFloat = 0.5
+        for count in SummaryLayout.petalRange {
+            let petals = (0..<count).map { PetalGeometry(petalCount: count, index: $0, outerRadius: 75) }
+            let paths = petals.map { $0.path(in: center) }
+            var covered = [Int](repeating: 0, count: count)
+            var shared = 0
+            var y = center.y - 75 + step / 2
+            while y < center.y + 75 {
+                var x = center.x - 75 + step / 2
+                while x < center.x + 75 {
+                    let holders = paths.indices.filter { paths[$0].contains(CGPoint(x: x, y: y)) }
+                    for holder in holders { covered[holder] += 1 }
+                    if holders.count > 1 { shared += 1 }
+                    x += step
+                }
+                y += step
+            }
+
+            XCTAssertEqual(shared, 0, "\(count) petals")
+            for (petal, points) in zip(petals, covered) {
+                let area = Double(petal.area(withinRadius: 75))
+                XCTAssertEqual(Double(points) * Double(step * step), area, accuracy: 0.01 * area, "\(count) petals, index \(petal.index)")
+            }
+        }
+    }
+
+    func testPetalsRunClockwiseFromTwelveOClock() {
+        let paths = (0..<4).map { PetalGeometry(petalCount: 4, index: $0, outerRadius: 75).path(in: center) }
+        // Twelve, three, six and nine o'clock on a y-down plane, 46 pt from the center.
+        let compass = [
+            CGPoint(x: center.x, y: center.y - 46),
+            CGPoint(x: center.x + 46, y: center.y),
+            CGPoint(x: center.x, y: center.y + 46),
+            CGPoint(x: center.x - 46, y: center.y),
+        ]
+
+        for (index, path) in paths.enumerated() {
+            XCTAssertEqual(compass.map { path.contains($0) }, (0..<4).map { $0 == index }, "petal \(index)")
+        }
+    }
+
+    func testPetalCornersAreRoundedAtBothEdges() {
+        let path = PetalGeometry(petalCount: 3, index: 0, outerRadius: 75).path(in: center)
+        // The petal spans -147 to -33 degrees. The corner probes sit 1.5 degrees inside each side.
+        func point(radius: CGFloat, degrees: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + radius * cos(degrees * .pi / 180), y: center.y + radius * sin(degrees * .pi / 180))
+        }
+
+        XCTAssertFalse(path.contains(point(radius: 73, degrees: -145.5)))
+        XCTAssertFalse(path.contains(point(radius: 73, degrees: -34.5)))
+        XCTAssertFalse(path.contains(point(radius: 19, degrees: -145.5)))
+        XCTAssertFalse(path.contains(point(radius: 19, degrees: -34.5)))
+        XCTAssertTrue(path.contains(point(radius: 73, degrees: -90)))
+        XCTAssertTrue(path.contains(point(radius: 19, degrees: -90)))
+        XCTAssertTrue(path.contains(point(radius: 50, degrees: -145.5)))
+        XCTAssertTrue(path.contains(point(radius: 50, degrees: -34.5)))
+    }
+
+    func testLabelSitsInsideItsPetalAtTheMiddleOfTheOuterThird() {
+        for count in SummaryLayout.petalRange {
+            for index in 0..<count {
+                let petal = PetalGeometry(petalCount: count, index: index, outerRadius: 75)
+                let label = petal.labelCenter(in: center)
+
+                XCTAssertEqual(hypot(label.x - center.x, label.y - center.y), 65.5, accuracy: 1e-6)
+                XCTAssertTrue(petal.path(in: center).contains(label), "\(count) petals, index \(index)")
+            }
+        }
+    }
+
+    func testPaletteHoldsEightDistinctColorsAndWrapsPastThem() {
+        XCTAssertEqual(Set((0..<8).map(QuotaPalette.color(at:))).count, 8)
+        XCTAssertEqual(QuotaPalette.color(at: 8), QuotaPalette.color(at: 0))
+        XCTAssertEqual(QuotaPalette.color(at: -1), QuotaPalette.color(at: 7))
+    }
+
+    @MainActor
+    func testLegendTextReusesTheMenuBarSlotText() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            draft(accountID: "acct-a", quotaLabel: "5 hours", fetchedAt: timestamp),
+            draft(accountID: "acct-b", quotaLabel: "7 days", fetchedAt: timestamp),
+        ])
+        let second = try XCTUnwrap(snapshot.reports[1].quotas.first?.pinKey)
+        let gone = QuotaPinKey(
+            account: StableAccountIdentity(provider: "openai-codex", accountID: "acct-gone", organizationID: nil, projectID: nil),
+            limitID: "quota-1",
+            scope: nil,
+            window: QuotaWindowIdentity(id: "7d")
+        )
+
+        let slots = snapshot.menuBarSlots(pins: MenuBarPins().toggling(second).toggling(gone))
+
+        XCTAssertEqual(
+            slots.map(UsageStore.accessibilityDescription(of:)),
+            ["Codex Account 2, 7 days, 73% left", "Pinned quota unavailable"]
+        )
+    }
+
+    @MainActor
+    func testSlotsShareTheFreshnessOfTheirOldestReport() throws {
+        let older = timestamp.addingTimeInterval(-3_600)
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            draft(accountID: "acct-a", quotaLabel: "5 hours", fetchedAt: timestamp),
+            draft(accountID: "acct-b", quotaLabel: "7 days", fetchedAt: older),
+        ])
+        let pins = try snapshot.reports.reduce(MenuBarPins()) { pins, report in
+            pins.toggling(try XCTUnwrap(report.quotas.first?.pinKey))
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        let store = UsageStore(persistence: AppPersistence(directoryURL: directory))
+
+        XCTAssertEqual(store.freshness(of: snapshot.menuBarSlots(pins: pins)).fetchedAt, older)
+        XCTAssertNil(store.freshness(of: []).fetchedAt)
+    }
+
+    private var center: CGPoint { CGPoint(x: 100, y: 100) }
+
+    private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
+
+    private func draft(accountID: String, quotaLabel: String, fetchedAt: Date) -> UsageReportDraft {
+        UsageReportDraft(
+            provider: "openai-codex",
+            sourceAccount: SourceAccountIdentity(accountID: accountID, organizationID: nil, projectID: nil),
+            privateDisplayLabel: nil,
+            fetchedAt: fetchedAt,
+            resetCredits: nil,
+            quotas: [
+                UsageQuotaDraft(
+                    id: "quota-1",
+                    label: quotaLabel,
+                    scope: nil,
+                    window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7d", durationMilliseconds: nil, resetLabel: nil),
+                    amount: UsageAmount(used: 27, limit: 100, remaining: 73, usedFraction: 0.27, remainingFraction: 0.73, unit: .percent),
+                    status: .available,
+                    resetsAt: nil
+                )
+            ]
+        )
+    }
+
+    // Counts the grid points the petal covers, in total and inside each disk around the flower's center.
+    private func sampledArea(of petal: PetalGeometry, insideDisks radii: [CGFloat]) -> (total: Double, inside: [Double]) {
+        let step: CGFloat = 0.25
+        let path = petal.path(in: center)
+        let box = path.boundingBoxOfPath
+        var total = 0
+        var inside = [Int](repeating: 0, count: radii.count)
+        var y = box.minY + step / 2
+        while y < box.maxY {
+            var x = box.minX + step / 2
+            while x < box.maxX {
+                if path.contains(CGPoint(x: x, y: y)) {
+                    total += 1
+                    let distance = hypot(x - center.x, y - center.y)
+                    for (offset, radius) in radii.enumerated() where distance <= radius {
+                        inside[offset] += 1
+                    }
+                }
+                x += step
+            }
+            y += step
+        }
+        let cell = Double(step * step)
+        return (Double(total) * cell, inside.map { Double($0) * cell })
     }
 }
