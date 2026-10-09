@@ -53,6 +53,7 @@ enum MenuBarBadgeRenderer {
     static let slotHeight: CGFloat = 16
 
     private static let badgeSide: CGFloat = 14
+    private static let badgeMinY: CGFloat = (slotHeight - badgeSide) / 2
     private static let badgeSpacing: CGFloat = 4
     private static let digitGap: CGFloat = 1
     private static let digitFontSize: CGFloat = 8.5
@@ -74,9 +75,20 @@ enum MenuBarBadgeRenderer {
         let width: CGFloat
     }
 
-    static func image(for badges: [MenuBarBadge], height: CGFloat = MenuBarBadgeRenderer.slotHeight) -> NSImage {
-        let columns = layout(badges)
-        let layoutWidth = columns.last.map { $0.originX + $0.width } ?? 0
+    private struct OverflowLabel: Sendable {
+        let text: String
+        let originX: CGFloat
+    }
+
+    private struct Layout: Sendable {
+        let columns: [Column]
+        let overflow: OverflowLabel?
+        let width: CGFloat
+    }
+
+    static func image(for badges: [MenuBarBadge], overflow: Int = 0, height: CGFloat = MenuBarBadgeRenderer.slotHeight) -> NSImage {
+        let arrangement = layout(badges, overflow: overflow)
+        let layoutWidth = arrangement.width
         let size = NSSize(width: layoutWidth * height / slotHeight, height: height)
         // AppKit runs the handler on whichever thread draws the image, so it must not inherit the main actor.
         let image = NSImage(size: size, flipped: false) { @Sendable destination in
@@ -84,7 +96,7 @@ enum MenuBarBadgeRenderer {
             context.saveGState()
             context.translateBy(x: destination.minX, y: destination.minY)
             context.scaleBy(x: destination.width / layoutWidth, y: destination.height / slotHeight)
-            draw(columns, in: context)
+            draw(arrangement, in: context)
             context.restoreGState()
             return true
         }
@@ -92,7 +104,7 @@ enum MenuBarBadgeRenderer {
         return image
     }
 
-    private static func layout(_ badges: [MenuBarBadge]) -> [Column] {
+    private static func layout(_ badges: [MenuBarBadge], overflow: Int) -> Layout {
         var columns: [Column] = []
         var originX: CGFloat = 0
         for badge in badges {
@@ -106,17 +118,26 @@ enum MenuBarBadgeRenderer {
             columns.append(Column(badge: badge, originX: originX, width: width))
             originX += width + badgeSpacing
         }
-        return columns
+        guard overflow > 0 else {
+            return Layout(columns: columns, overflow: nil, width: columns.last.map { $0.originX + $0.width } ?? 0)
+        }
+        // The loop leaves originX one badgeSpacing past the last column, which is where the count starts.
+        let text = "+\(overflow)"
+        let width = advance(of: text, font: digitFont()).rounded()
+        return Layout(columns: columns, overflow: OverflowLabel(text: text, originX: originX), width: originX + width)
     }
 
-    private static func draw(_ columns: [Column], in context: CGContext) {
+    private static func draw(_ arrangement: Layout, in context: CGContext) {
         context.saveGState()
         context.setShouldAntialias(true)
         context.setShouldSmoothFonts(false)
         // The layer keeps the clear blend from reaching whatever AppKit is drawing into.
         context.beginTransparencyLayer(auxiliaryInfo: nil)
-        for column in columns {
+        for column in arrangement.columns {
             drawBadge(column, in: context)
+        }
+        if let overflow = arrangement.overflow {
+            drawText(overflow.text, font: digitFont(), at: CGPoint(x: overflow.originX, y: badgeMinY), alpha: 1, in: context)
         }
         context.endTransparencyLayer()
         context.restoreGState()
@@ -125,7 +146,7 @@ enum MenuBarBadgeRenderer {
     private static func drawBadge(_ column: Column, in context: CGContext) {
         let badge = column.badge
         let geometry = RoundedSquareGeometry(side: badgeSide)
-        let rect = CGRect(x: column.originX, y: (slotHeight - badgeSide) / 2, width: badgeSide, height: badgeSide)
+        let rect = CGRect(x: column.originX, y: badgeMinY, width: badgeSide, height: badgeSide)
         // Staleness is the report's age, not its amount, so an unknown gauge goes stale too. A missing pin has no report.
         let staleDim: CGFloat = badge.isStale ? staleFillAlpha : 1
         var textAlpha: CGFloat = 1

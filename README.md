@@ -41,7 +41,7 @@ Set `DEVELOPER_DIR` on each command. Keep DerivedData under the ignored `.local/
 
 ## What it does
 
-Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one badge for each quota you pin. The panel lists every report returned by OMP.
+Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one badge for each quota you pin. With nothing pinned, it shows the quotas that need attention. The panel lists every report returned by OMP.
 
 **Collection cadence.** On launch the app loads any saved snapshot, then refreshes immediately. It refreshes again every 5 minutes and whenever you press the panel refresh control. A separate presentation clock ticks every 30 seconds so age and reset countdowns move without another OMP call.
 
@@ -51,7 +51,7 @@ Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label show
 
 A badge is a 14 pt rounded square with the provider's initial in a heavy system font. The letters are `C` for Claude, `O` for Codex, `G` for Grok, and `U` for Cursor. For a provider that Quotablet does not know, the panel shows the raw provider id and the badge shows its first letter in capitals. The badge fills from the bottom as the quota is used. The fill covers the used share of the badge's area, not of its height, so the rounded corners do not skew the reading. The letter is cut out of the badge and stays readable over both the used and the unused part.
 
-A badge shows a small account number only when the number tells accounts apart. If a provider's pinned quotas come from two or more accounts, each of those badges shows the number of its account. The number matches the `N` in the panel's `Account N` label. If every pinned quota of a provider comes from one account, none of those badges shows a number. A missing pin never shows a number and does not count as an account. With nothing pinned, the menu bar shows the first quota in provider order, and the panel marks it as selected by default. With no quota available, the menu bar shows the `gauge.with.dots.needle.33percent` symbol.
+A badge shows a small account number only when the number tells accounts apart. If a provider's pinned quotas come from two or more accounts, each of those badges shows the number of its account. The number matches the `N` in the panel's `Account N` label. If every pinned quota of a provider comes from one account, none of those badges shows a number. A missing pin never shows a number and does not count as an account. With nothing pinned, the menu bar shows the quotas that need attention, described under **Needs attention** below. With no quota available, the menu bar shows the `gauge.with.dots.needle.33percent` symbol.
 
 A badge shows a small window tag only when the tag tells windows apart. If one account pins quotas with two or more window lengths, each badge of that account shows the length of its window, so the 5-hour and 7-day quotas of one Claude account read `5h` and `7d`. If an account pins one quota, or all its pinned quotas share one length, none of its badges shows a tag. Two quotas of the same length, such as `7 Day` and `7 Day (Fable)`, count as one length. A missing pin never shows a tag and does not count toward the lengths.
 
@@ -64,7 +64,30 @@ A badge has one of four looks.
 - **Unknown.** The quota has no usable usage figure. The badge is a 1 pt outline with a solid letter and no fill, so it never reads as 0% or 100%.
 - **Missing.** The pinned key is absent from the current snapshot or matches more than one quota. The badge keeps its position as a dashed outline with a dimmed letter. Quotablet does not substitute another quota. In the summary card's row list, the row says "Pinned quota unavailable" and has a **Remove** button. In the petal chart, the legend row says "Unavailable" and has the same button. VoiceOver reads "Pinned quota unavailable" in both layouts.
 
-**Summary card.** The card at the top of the panel repeats your pins. It shows one row per quota when it holds 1 or 2 quotas, or more than 8. With 3 to 8 pinned quotas it draws a petal chart and a legend instead, so 8 pins take 200 pt of height and the card does not grow with each pin.
+**Needs attention.** With nothing pinned, the menu bar shows the quotas that need attention instead of one arbitrary quota. A quota needs attention when OMP reports its status as exhausted or near limit, or when its remaining amount is zero or below. A quota that OMP reports as available, or without a recognized status, needs attention only when its remaining amount is zero or below. Quotablet adds no percentage threshold and no setting.
+
+Quotablet ranks quotas with one comparator, and the first difference decides.
+
+1. An exhausted quota comes before a near-limit quota.
+2. The quota with the smaller remaining share comes first. A quota with no usable usage figure comes after the ones that have one. An exhausted quota counts as having nothing left, so this step never separates two exhausted quotas.
+3. The quota that resets sooner comes first. A quota with no reset time comes last.
+4. Quotas that still tie keep a fixed order of provider, account, window, and quota label.
+
+So exhausted quotas come first with the soonest reset on top, and near-limit quotas follow with the least remaining on top.
+
+The menu bar shows one badge for each account, and that badge stands for the account's top-ranked quota. An account with a healthy 5-hour quota and an exhausted 7-day quota shows the 7-day quota. The label holds the first 4 accounts in rank order. When more accounts need attention, `+N` follows the last badge, where N is the number of accounts that did not fit. `+N` uses the same font as the account numbers and sits on the same bottom edge. An attention badge shows its account number when two or more accounts of its provider need attention, even if some of those accounts did not fit in the label. If Codex Accounts 1 and 3 need attention and only Account 1 fits, the Codex badge shows the number 1 instead of a bare `O`. The panel's rows follow the same rule, so a quota that appears in the label and in a row has the same letter, number, and tag in both. An attention badge shows its window tag whenever its account has quotas with two or more window lengths, so the exhausted 7-day quota of an account that also has a 5-hour quota reads `7d`. The tag names the window that needs attention. Pins and attention never mix. Once you pin a quota, the menu bar shows only your pins and no `+N`, and the panel still lists what needs attention.
+
+With nothing pinned and nothing needing attention, the menu bar shows one badge for the most used quota, which is the quota with the highest known used share. Ties go to the sooner reset, then to the fixed order above. If no quota has a known used share, the menu bar shows the first quota in provider order.
+
+The panel shows a Needs attention section above the summary card whenever any quota needs attention, whether or not you pinned anything. The header reads `NEEDS ATTENTION · N`, where N counts the rows. The section lists every quota that needs attention in rank order, not one per account. A row shows the badge at 22 pt, the provider and account, the quota label, `Exhausted` in red or `Near limit` in orange, the remaining amount, and the reset countdown. A stale quota still counts. Its badge keeps the stale look, and its row adds `Stale` in orange.
+
+Each account section gets a second header line when that account has a quota that needs attention. The line names the account's top-ranked quota, such as `Claude 7 Day exhausted · resets in 18h 5m` in red or `Claude 5 Hour near limit · resets in 2h 10m` in orange. Account sections keep the order OMP sends.
+
+The header line names a quota and never says that the account is blocked. OMP reports each quota on its own, and some quotas, such as `7 Day (Fable)`, cover only certain models. The data does not say which quotas cover the whole account. So Quotablet reports the quota that ran out and leaves the conclusion to you.
+
+VoiceOver and the hover text of the menu bar item start with `Needs attention:` and list each shown account, such as `Claude Account 1, Claude 7 Day, 0% left, exhausted, resets in 18h 5m`. Semicolons separate the accounts. When some did not fit, the list ends with `and 2 more accounts`. The freshness text follows the list. With nothing pinned and nothing needing attention, the text starts with `Most used:` instead. With pins, the text lists the pinned quotas with no prefix.
+
+**Summary card.** The card repeats your pins. It sits below the Needs attention section when that section shows. With nothing pinned, the card is hidden while the Needs attention section shows, because the section already lists those quotas. With nothing pinned and nothing needing attention, the card holds one row for the most used quota under the header `MOST USED`. The card shows one row per quota when it holds 1 or 2 quotas, or more than 8. With 3 to 8 pinned quotas it draws a petal chart and a legend instead, so 8 pins take 200 pt of height and the card does not grow with each pin.
 
 The chart has one petal per pin, in the order you pinned them. The first petal points at 12 o'clock and the others follow clockwise. Each petal fills outward from the center hole over a pale track of its own color. The fill covers the used share of the petal's area, not of its length, because a petal widens outward and its length would skew the reading. Each petal carries the badge's letter and account number. When the used share changes, the fill grows or shrinks over 0.35 seconds.
 

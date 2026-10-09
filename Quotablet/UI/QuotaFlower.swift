@@ -406,7 +406,7 @@ private struct FlowerLegendRow: View {
 
     var body: some View {
         switch slot {
-        case .pinned(let selection), .defaulted(let selection):
+        case .pinned(let selection), .attention(let selection), .defaulted(let selection):
             details(of: selection)
         case .missing(let key):
             unavailable(key)

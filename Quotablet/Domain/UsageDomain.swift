@@ -256,6 +256,18 @@ struct UsageQuota: Codable, Equatable, Identifiable, Sendable {
         return amount?.isKnownExhausted ?? false
     }
 
+    var urgency: QuotaUrgency? {
+        if isKnownExhausted { return .exhausted }
+        if case .nearLimit = status { return .nearLimit }
+        return nil
+    }
+
+    // An exhausted quota has nothing left whatever its amount says, so it counts as empty even when the amount is unknown.
+    var remainingShare: Double? {
+        if isKnownExhausted { return 0 }
+        return amount?.progress.map { 1 - $0 }
+    }
+
     var windowDisplayName: String {
         window?.displayName ?? "Window unknown"
     }
@@ -281,12 +293,34 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
         case .transient(let identity): ["1", String(identity.reportOrdinal)]
         }
     }
+
+    var windowLengths: Set<QuotaWindow.LengthKey> {
+        Set(quotas.compactMap { $0.window?.lengthKey })
+    }
 }
 
 struct SelectedQuota: Equatable, Sendable {
     let report: UsageReport
     let quota: UsageQuota
     let accountNumber: Int
+}
+
+// Declaration order is rank order, so a lower case sorts first.
+enum QuotaUrgency: Comparable, Sendable {
+    case exhausted
+    case nearLimit
+
+    var label: String {
+        switch self {
+        case .exhausted: "Exhausted"
+        case .nearLimit: "Near limit"
+        }
+    }
+}
+
+struct AttentionItem: Equatable, Sendable {
+    let selection: SelectedQuota
+    let urgency: QuotaUrgency
 }
 
 struct MenuBarPins: Codable, Equatable, Sendable {
@@ -327,20 +361,37 @@ struct MenuBarPins: Codable, Equatable, Sendable {
 enum MenuBarSlot: Equatable, Sendable {
     case pinned(SelectedQuota)
     case missing(QuotaPinKey)
+    case attention(SelectedQuota)
     case defaulted(SelectedQuota)
 
     var selected: SelectedQuota? {
         switch self {
-        case .pinned(let selection), .defaulted(let selection): selection
+        case .pinned(let selection), .attention(let selection), .defaulted(let selection): selection
         case .missing: nil
         }
     }
 
     var provider: String {
         switch self {
-        case .pinned(let selection), .defaulted(let selection): selection.report.provider
+        case .pinned(let selection), .attention(let selection), .defaulted(let selection): selection.report.provider
         case .missing(let key): key.account.provider
         }
+    }
+}
+
+struct MenuBarContent: Equatable, Sendable {
+    static let attentionSlotLimit = 4
+
+    let slots: [MenuBarSlot]
+    // Accounts that need attention and did not fit in the slots, in rank order.
+    // Items rather than a count, because a shown badge's account number depends on whether a hidden account shares its provider.
+    let hiddenAttention: [AttentionItem]
+
+    var hiddenAttentionCount: Int { hiddenAttention.count }
+
+    init(slots: [MenuBarSlot], hiddenAttention: [AttentionItem] = []) {
+        self.slots = slots
+        self.hiddenAttention = hiddenAttention
     }
 }
 
@@ -366,12 +417,15 @@ struct MenuBarBadge: Equatable, Sendable {
     let isStale: Bool
     let windowTag: String?
 
-    static func badges(for slots: [MenuBarSlot], now: Date) -> [MenuBarBadge] {
+    static func badges(for content: MenuBarContent, now: Date) -> [MenuBarBadge] {
+        let slots = content.slots
         let selections = slots.compactMap(\.selected)
         // The number only tells accounts apart, so a provider's slots show one only when they span two or more accounts.
-        let accountsByProvider = Dictionary(grouping: selections, by: { $0.report.provider })
+        // Hidden attention accounts count too, so a shown badge keeps its number when its sibling account does not fit in the menu bar.
+        let accountsByProvider = Dictionary(grouping: selections + content.hiddenAttention.map(\.selection), by: { $0.report.provider })
             .mapValues { Set($0.map(\.accountNumber)) }
-        // The tag only tells window lengths apart, so an account's slots show one only when they span two or more lengths.
+        // The tag only tells window lengths apart, so a pinned slot shows one only when its account's slots span two or more lengths.
+        // An attention slot stands for its whole account, so it counts every length the account's quotas span.
         let lengthsByAccount = Dictionary(grouping: selections, by: { $0.report.id })
             .mapValues { Set($0.compactMap(\.quota.window?.lengthKey)) }
         return slots.map { slot -> MenuBarBadge in
@@ -381,7 +435,12 @@ struct MenuBarBadge: Equatable, Sendable {
             }
             let freshness = UsageFreshness(origin: nil, fetchedAt: selection.report.fetchedAt, refreshStatus: .idle)
             let spansAccounts = accountsByProvider[selection.report.provider, default: []].count > 1
-            let spansLengths = lengthsByAccount[selection.report.id, default: []].count > 1
+            let spansLengths: Bool
+            if case .attention = slot {
+                spansLengths = selection.report.windowLengths.count > 1
+            } else {
+                spansLengths = lengthsByAccount[selection.report.id, default: []].count > 1
+            }
             return MenuBarBadge(
                 letter: letter,
                 accountNumber: spansAccounts ? selection.accountNumber : nil,
@@ -479,23 +538,74 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         return (sameProvider.firstIndex { $0.id == report.id } ?? 0) + 1
     }
 
-    func menuBarSlots(pins: MenuBarPins) -> [MenuBarSlot] {
-        let candidates = reports.flatMap { report -> [SelectedQuota] in
+    func attentionItems() -> [AttentionItem] {
+        selections
+            .compactMap { selection in selection.quota.urgency.map { AttentionItem(selection: selection, urgency: $0) } }
+            .sorted(by: Self.ranksBefore)
+    }
+
+    func accountAttention() -> [AttentionItem] {
+        var seen = Set<ReportRowID>()
+        return attentionItems().filter { seen.insert($0.selection.report.id).inserted }
+    }
+
+    func menuBarContent(pins: MenuBarPins) -> MenuBarContent {
+        if !pins.keys.isEmpty {
+            let candidates = selections
+            return MenuBarContent(slots: pins.keys.map { key -> MenuBarSlot in
+                let matches = candidates.filter { $0.quota.pinKey == key }
+                guard matches.count == 1, let match = matches.first else { return .missing(key) }
+                return .pinned(match)
+            })
+        }
+        let attention = accountAttention()
+        if !attention.isEmpty {
+            let shown = attention.prefix(MenuBarContent.attentionSlotLimit)
+            return MenuBarContent(
+                slots: shown.map { MenuBarSlot.attention($0.selection) },
+                hiddenAttention: Array(attention.dropFirst(shown.count))
+            )
+        }
+        return MenuBarContent(slots: mostUsed().map { [MenuBarSlot.defaulted($0)] } ?? [])
+    }
+
+    private var selections: [SelectedQuota] {
+        reports.flatMap { report -> [SelectedQuota] in
             let number = accountNumber(of: report)
             return report.quotas.map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
         }
-        guard !pins.keys.isEmpty else {
-            guard let first = candidates.min(by: Self.isDefaultedBefore) else { return [] }
-            return [.defaulted(first)]
-        }
-        return pins.keys.map { key -> MenuBarSlot in
-            let matches = candidates.filter { $0.quota.pinKey == key }
-            guard matches.count == 1, let match = matches.first else { return .missing(key) }
-            return .pinned(match)
-        }
     }
 
-    private static func isDefaultedBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
+    // With no known usage, fall back to the first quota in the stable order, the pick the menu bar made before it ranked.
+    private func mostUsed() -> SelectedQuota? {
+        let candidates = selections
+        let measured = candidates.filter { $0.quota.remainingShare != nil }
+        return measured.isEmpty ? candidates.min(by: Self.isStablyBefore) : measured.min(by: Self.isMoreUsedBefore)
+    }
+
+    // The first key that differs decides: urgency, then the least remaining, then the earliest reset, then the stable order.
+    private static func ranksBefore(_ left: AttentionItem, _ right: AttentionItem) -> Bool {
+        if left.urgency != right.urgency { return left.urgency < right.urgency }
+        return ascendingUnknownLast(left.selection.quota.remainingShare, right.selection.quota.remainingShare)
+            ?? resetsBeforeStableOrder(left.selection, right.selection)
+    }
+
+    private static func isMoreUsedBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
+        ascendingUnknownLast(left.quota.remainingShare, right.quota.remainingShare) ?? resetsBeforeStableOrder(left, right)
+    }
+
+    private static func resetsBeforeStableOrder(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
+        ascendingUnknownLast(left.quota.resetsAt, right.quota.resetsAt) ?? isStablyBefore(left, right)
+    }
+
+    // A tie is nil, so the caller falls through to its next key.
+    private static func ascendingUnknownLast<Value: Comparable>(_ left: Value?, _ right: Value?) -> Bool? {
+        guard let left else { return right == nil ? nil : false }
+        guard let right else { return true }
+        return left == right ? nil : left < right
+    }
+
+    private static func isStablyBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
         if left.report.provider != right.report.provider {
             return left.report.provider.localizedStandardCompare(right.report.provider) == .orderedAscending
         }
@@ -631,6 +741,12 @@ enum UsageFormatting {
             verb = "Resets"
         }
         return "\(verb) in \(countdown)"
+    }
+
+    // The reset text inside a line, such as "resets in 2h 5m" after a comma.
+    static func resetPhrase(for resetsAt: Date?, resetLabel: String?, now: Date) -> String {
+        let description = resetDescription(for: resetsAt, resetLabel: resetLabel, now: now)
+        return String(description.prefix(1)).lowercased() + String(description.dropFirst())
     }
 
     static func ageDescription(_ seconds: TimeInterval) -> String {

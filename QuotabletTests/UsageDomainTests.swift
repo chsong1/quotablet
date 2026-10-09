@@ -170,8 +170,8 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertNil(missingWindow.reports.first?.quotas.first?.pinKey)
         XCTAssertEqual(missingWindow.reports.first?.quotas.first?.windowDisplayName, "Window unknown")
         let pins = MenuBarPins().toggling(savedKey)
-        XCTAssertEqual(different.menuBarSlots(pins: pins), [.missing(savedKey)])
-        guard case .pinned(let selection) = returned.menuBarSlots(pins: pins).first else {
+        XCTAssertEqual(different.menuBarContent(pins: pins), MenuBarContent(slots: [.missing(savedKey)]))
+        guard case .pinned(let selection) = returned.menuBarContent(pins: pins).slots.first else {
             XCTFail("The exact stable key must reconnect when it returns.")
             return
         }
@@ -234,12 +234,12 @@ final class UsageDomainTests: XCTestCase {
         let pins = MenuBarPins().toggling(keys[2]).toggling(departed).toggling(keys[0])
 
         XCTAssertEqual(
-            described(snapshot.menuBarSlots(pins: pins)),
+            described(snapshot.menuBarContent(pins: pins).slots),
             ["pinned:acct-c", "missing:acct-gone", "pinned:acct-a"]
         )
     }
 
-    func testWithoutPinsTheDefaultQuotaIsSelectedAndAnEmptySnapshotSelectsNothing() throws {
+    func testWithNothingToFlagAndEqualUsageTheMenuBarShowsTheFirstQuotaInProviderOrder() throws {
         let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
             report(provider: "openai-codex", accountID: "acct-codex"),
             report(provider: "anthropic", accountID: "acct-claude")
@@ -247,9 +247,192 @@ final class UsageDomainTests: XCTestCase {
         let empty = UsageSnapshot(generatedAt: timestamp, reportDrafts: [])
         let strayKey = try pinKeys(in: snapshot)[0]
 
-        XCTAssertEqual(described(snapshot.menuBarSlots(pins: MenuBarPins())), ["defaulted:acct-claude"])
-        XCTAssertEqual(empty.menuBarSlots(pins: MenuBarPins()), [])
-        XCTAssertEqual(empty.menuBarSlots(pins: MenuBarPins().toggling(strayKey)), [.missing(strayKey)])
+        XCTAssertEqual(described(snapshot.menuBarContent(pins: MenuBarPins()).slots), ["defaulted:acct-claude"])
+        XCTAssertEqual(empty.menuBarContent(pins: MenuBarPins()), MenuBarContent(slots: []))
+        XCTAssertEqual(empty.menuBarContent(pins: MenuBarPins().toggling(strayKey)), MenuBarContent(slots: [.missing(strayKey)]))
+    }
+
+    func testUrgencyFollowsOMPStatusAndAKnownEmptyQuota() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-a", quotas: [
+                quota(id: "exhausted-status", status: .exhausted, remainingPercent: 40),
+                quota(id: "zero-remaining", status: .available, remainingPercent: 0),
+                quota(id: "near-limit", status: .nearLimit, remainingPercent: 12),
+                quota(id: "near-limit-and-empty", status: .nearLimit, remainingPercent: 0),
+                quota(id: "available-and-low", status: .available, remainingPercent: 3),
+                quota(id: "unknown-status", status: .unknown("critical"), remainingPercent: 3),
+                quota(id: "missing-status", status: .missing, remainingPercent: nil)
+            ])
+        ])
+
+        XCTAssertEqual(
+            snapshot.reports[0].quotas.map(\.urgency),
+            [.exhausted, .exhausted, .nearLimit, .exhausted, nil, nil, nil]
+        )
+    }
+
+    func testAttentionItemsRankExhaustedFirstBySoonestResetThenNearLimitByLeastRemaining() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "exhausted, resets in 10h", status: .exhausted, remainingPercent: 0, resetsInHours: 10),
+            account("acct-b", label: "near limit 30%, resets in 3h", status: .nearLimit, remainingPercent: 30, resetsInHours: 3),
+            account("acct-c", label: "available 2%", status: .available, remainingPercent: 2, resetsInHours: 1),
+            account("acct-d", label: "exhausted, resets in 2h", status: .exhausted, remainingPercent: 0, resetsInHours: 2),
+            account("acct-e", label: "near limit 10%, resets in 5h", status: .nearLimit, remainingPercent: 10, resetsInHours: 5),
+            account("acct-f", label: "near limit 30%, resets in 1h", status: .nearLimit, remainingPercent: 30, resetsInHours: 1)
+        ])
+
+        let items = snapshot.attentionItems()
+
+        XCTAssertEqual(items.map(\.selection.quota.label), [
+            "exhausted, resets in 2h",
+            "exhausted, resets in 10h",
+            "near limit 10%, resets in 5h",
+            "near limit 30%, resets in 1h",
+            "near limit 30%, resets in 3h"
+        ])
+        XCTAssertEqual(items.map(\.urgency), [.exhausted, .exhausted, .nearLimit, .nearLimit, .nearLimit])
+    }
+
+    func testRankingPutsAnUnknownRemainingAndAMissingResetAfterKnownOnes() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "amount unknown, resets in 1h", status: .nearLimit, remainingPercent: nil, resetsInHours: 1),
+            account("acct-b", label: "40% left, no reset", status: .nearLimit, remainingPercent: 40, resetsInHours: nil),
+            account("acct-c", label: "40% left, resets in 9h", status: .nearLimit, remainingPercent: 40, resetsInHours: 9)
+        ])
+
+        XCTAssertEqual(snapshot.attentionItems().map(\.selection.quota.label), [
+            "40% left, resets in 9h",
+            "40% left, no reset",
+            "amount unknown, resets in 1h"
+        ])
+    }
+
+    func testAnExhaustedQuotaRanksByResetEvenWhenItsAmountIsUnknown() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "0% left, resets in 3h", status: .exhausted, remainingPercent: 0, resetsInHours: 3),
+            account("acct-b", label: "amount unknown, resets in 1h", status: .exhausted, remainingPercent: nil, resetsInHours: 1)
+        ])
+
+        XCTAssertEqual(snapshot.attentionItems().map(\.selection.quota.label), [
+            "amount unknown, resets in 1h",
+            "0% left, resets in 3h"
+        ])
+    }
+
+    func testFullTiesKeepTheStableOrderOfProviderThenAccount() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-b", provider: "openai-codex", label: "codex b", status: .exhausted, remainingPercent: 0, resetsInHours: 2),
+            account("acct-b", label: "claude b", status: .exhausted, remainingPercent: 0, resetsInHours: 2),
+            account("acct-a", label: "claude a", status: .exhausted, remainingPercent: 0, resetsInHours: 2)
+        ])
+
+        XCTAssertEqual(snapshot.attentionItems().map(\.selection.quota.label), ["claude a", "claude b", "codex b"])
+    }
+
+    func testAccountAttentionKeepsOneItemPerAccountItsTopRanked() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-x", quotas: [
+                quota(id: "x-5h", resetsAt: later(hours: 1), label: "x 5 Hour near limit", status: .nearLimit, remainingPercent: 5),
+                quota(
+                    id: "x-7d",
+                    windowID: "7d",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 18),
+                    label: "x 7 Day exhausted",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ]),
+            report(accountID: "acct-y", quotas: [
+                quota(id: "y-5h", label: "y 5 Hour near limit", status: .nearLimit, remainingPercent: 20)
+            ]),
+            report(accountID: "acct-z", quotas: [
+                quota(
+                    id: "z-7d",
+                    windowID: "7d",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 1),
+                    label: "z 7 Day exhausted",
+                    status: .exhausted,
+                    remainingPercent: 0
+                ),
+                quota(id: "z-5h", label: "z 5 Hour available")
+            ]),
+            report(accountID: "acct-w", quotas: [quota(id: "w-5h", label: "w 5 Hour available")])
+        ])
+
+        XCTAssertEqual(snapshot.attentionItems().map(\.selection.quota.label), [
+            "z 7 Day exhausted",
+            "x 7 Day exhausted",
+            "x 5 Hour near limit",
+            "y 5 Hour near limit"
+        ])
+        XCTAssertEqual(snapshot.accountAttention().map(\.selection.quota.label), [
+            "z 7 Day exhausted",
+            "x 7 Day exhausted",
+            "y 5 Hour near limit"
+        ])
+        XCTAssertEqual(snapshot.accountAttention().map(\.selection.report.sourceAccount?.accountID), ["acct-z", "acct-x", "acct-y"])
+    }
+
+    func testWithoutPinsTheMenuBarShowsTheFirstFourAttentionAccountsAndCountsTheRest() {
+        let six = attentionSnapshot(accountCount: 6).menuBarContent(pins: MenuBarPins())
+        let five = attentionSnapshot(accountCount: 5).menuBarContent(pins: MenuBarPins())
+        let four = attentionSnapshot(accountCount: 4).menuBarContent(pins: MenuBarPins())
+
+        XCTAssertEqual(described(six.slots), ["attention:acct-6", "attention:acct-5", "attention:acct-4", "attention:acct-3"])
+        XCTAssertEqual(six.slots.compactMap { $0.selected?.quota.label }, Array(repeating: "Claude 7 Day", count: 4))
+        XCTAssertEqual(six.hiddenAttentionCount, 2)
+        XCTAssertEqual(six.hiddenAttention.map(\.selection.report.sourceAccount?.accountID), ["acct-2", "acct-1"])
+        XCTAssertEqual(described(five.slots), ["attention:acct-5", "attention:acct-4", "attention:acct-3", "attention:acct-2"])
+        XCTAssertEqual(five.hiddenAttentionCount, 1)
+        XCTAssertEqual(described(four.slots), ["attention:acct-4", "attention:acct-3", "attention:acct-2", "attention:acct-1"])
+        XCTAssertEqual(four.hiddenAttentionCount, 0)
+    }
+
+    func testPinsReplaceAttentionInTheMenuBarAndHideNothing() throws {
+        let snapshot = attentionSnapshot(accountCount: 6)
+        let fiveHour = try pinKeys(of: snapshot.reports[0])[0]
+
+        let content = snapshot.menuBarContent(pins: MenuBarPins().toggling(fiveHour))
+
+        XCTAssertEqual(described(content.slots), ["pinned:acct-1"])
+        XCTAssertEqual(content.hiddenAttentionCount, 0)
+    }
+
+    func testWithNothingToFlagTheMenuBarShowsTheMostUsedQuotaBrokenByResetThenStableOrder() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "60% left", status: .available, remainingPercent: 60, resetsInHours: 1),
+            account("acct-b", label: "15% left, resets in 9h", status: .available, remainingPercent: 15, resetsInHours: 9),
+            account("acct-c", label: "15% left, resets in 2h", status: .available, remainingPercent: 15, resetsInHours: 2),
+            account("acct-d", label: "15% left, no reset", status: .available, remainingPercent: 15, resetsInHours: nil),
+            account("acct-e", label: "amount unknown", status: .available, remainingPercent: nil, resetsInHours: 1)
+        ])
+
+        let content = snapshot.menuBarContent(pins: MenuBarPins())
+
+        XCTAssertEqual(described(content.slots), ["defaulted:acct-c"])
+        XCTAssertEqual(content.hiddenAttentionCount, 0)
+    }
+
+    func testWithNoKnownUsageTheMenuBarFallsBackToProviderOrderEvenWhenAnotherQuotaResetsSooner() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-codex", provider: "openai-codex", label: "codex", status: .available, remainingPercent: nil, resetsInHours: 1),
+            account("acct-claude", label: "claude", status: .available, remainingPercent: nil, resetsInHours: 9)
+        ])
+
+        XCTAssertEqual(described(snapshot.menuBarContent(pins: MenuBarPins()).slots), ["defaulted:acct-claude"])
+    }
+
+    func testAStaleQuotaStillNeedsAttentionAndItsBadgeStaysStale() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "exhausted, resets in 3h", status: .exhausted, remainingPercent: 0, resetsInHours: 3)
+        ])
+        let content = snapshot.menuBarContent(pins: MenuBarPins())
+
+        XCTAssertEqual(described(content.slots), ["attention:acct-a"])
+        XCTAssertEqual(MenuBarBadge.badges(for: content, now: timestamp).map(\.isStale), [false])
+        XCTAssertEqual(MenuBarBadge.badges(for: content, now: timestamp.addingTimeInterval(900)).map(\.isStale), [true])
     }
 
     func testTogglingAppendsRemovesAndNeverDuplicatesPins() throws {
@@ -437,11 +620,101 @@ final class UsageDomainTests: XCTestCase {
         let account = snapshot.reports[0]
         func tags(of quotas: [UsageQuota]) -> [String?] {
             let slots = quotas.map { MenuBarSlot.pinned(SelectedQuota(report: account, quota: $0, accountNumber: 1)) }
-            return MenuBarBadge.badges(for: slots, now: timestamp).map(\.windowTag)
+            return MenuBarBadge.badges(for: MenuBarContent(slots: slots), now: timestamp).map(\.windowTag)
         }
 
         XCTAssertEqual(tags(of: [account.quotas[0], account.quotas[2]]), [nil, nil])
         XCTAssertEqual(tags(of: account.quotas), ["5h", "7d", nil])
+    }
+
+    func testAttentionSlotTagsItsWindowWhenItsAccountSpansTwoLengthsAndAPinnedSlotKeepsThePinRule() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", windowID: "5h", windowLabel: "5 Hour"),
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    windowLabel: "7 Day",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 1),
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ]),
+            report(accountID: "claude-b", quotas: [
+                quota(id: "session", windowID: "5h", windowLabel: "5 Hour", resetsAt: later(hours: 2), status: .nearLimit, remainingPercent: 10)
+            ]),
+            report(accountID: "claude-c", quotas: [
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    windowLabel: "7 Day",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 3),
+                    status: .exhausted,
+                    remainingPercent: 0
+                ),
+                quota(id: "weekly-fable", windowID: "7d-fable", windowLabel: "7 Day (Fable)", durationMilliseconds: 604_800_000)
+            ])
+        ])
+        let content = snapshot.menuBarContent(pins: MenuBarPins())
+
+        XCTAssertEqual(MenuBarBadge.badges(for: content, now: timestamp), [
+            MenuBarBadge(letter: "C", accountNumber: 1, gauge: .used(1), isStale: false, windowTag: "7d"),
+            MenuBarBadge(letter: "C", accountNumber: 3, gauge: .used(1), isStale: false, windowTag: nil),
+            MenuBarBadge(letter: "C", accountNumber: 2, gauge: .used(0.9), isStale: false, windowTag: nil)
+        ])
+        let weekly = try pinKeys(of: snapshot.reports[0])[1]
+        XCTAssertEqual(windowTags(pinning: [weekly], in: snapshot), [nil])
+    }
+
+    func testAnAttentionBadgeKeepsItsAccountNumberWhenAnotherAccountOfItsProviderDoesNotFit() {
+        let content = hiddenCodexSnapshot().menuBarContent(pins: MenuBarPins())
+
+        XCTAssertEqual(
+            described(content.slots),
+            ["attention:claude-a", "attention:cursor-a", "attention:claude-b", "attention:codex-a"]
+        )
+        XCTAssertEqual(content.hiddenAttention.map(\.selection.report.sourceAccount?.accountID), ["codex-c"])
+        XCTAssertEqual(content.hiddenAttentionCount, 1)
+        XCTAssertEqual(MenuBarBadge.badges(for: content, now: timestamp), [
+            MenuBarBadge(letter: "C", accountNumber: 1, gauge: .used(1), isStale: false, windowTag: "7d"),
+            MenuBarBadge(letter: "U", accountNumber: nil, gauge: .used(1), isStale: false, windowTag: nil),
+            MenuBarBadge(letter: "C", accountNumber: 2, gauge: .used(0.9), isStale: false, windowTag: "5h"),
+            MenuBarBadge(letter: "O", accountNumber: 1, gauge: .used(0.75), isStale: false, windowTag: nil)
+        ])
+    }
+
+    func testAnAttentionBadgeShowsNoAccountNumberWhenNoOtherAccountOfItsProviderNeedsAttention() {
+        let content = hiddenCodexSnapshot(codexThreeNeedsAttention: false).menuBarContent(pins: MenuBarPins())
+
+        XCTAssertEqual(
+            described(content.slots),
+            ["attention:claude-a", "attention:cursor-a", "attention:claude-b", "attention:codex-a"]
+        )
+        XCTAssertEqual(content.hiddenAttentionCount, 0)
+        XCTAssertEqual(MenuBarBadge.badges(for: content, now: timestamp).map(\.accountNumber), [1, nil, 2, nil])
+    }
+
+    func testTheMenuBarAndThePanelRowsGiveOneQuotaTheSameBadge() {
+        let snapshot = hiddenCodexSnapshot()
+        let content = snapshot.menuBarContent(pins: MenuBarPins())
+        let items = snapshot.attentionItems()
+
+        let rows = MenuBarBadge.badges(for: MenuBarContent(slots: items.map { MenuBarSlot.attention($0.selection) }), now: timestamp)
+
+        XCTAssertEqual(rows, [
+            MenuBarBadge(letter: "C", accountNumber: 1, gauge: .used(1), isStale: false, windowTag: "7d"),
+            MenuBarBadge(letter: "U", accountNumber: nil, gauge: .used(1), isStale: false, windowTag: nil),
+            MenuBarBadge(letter: "C", accountNumber: 1, gauge: .used(0.95), isStale: false, windowTag: "5h"),
+            MenuBarBadge(letter: "C", accountNumber: 2, gauge: .used(0.9), isStale: false, windowTag: "5h"),
+            MenuBarBadge(letter: "O", accountNumber: 1, gauge: .used(0.75), isStale: false, windowTag: nil),
+            MenuBarBadge(letter: "O", accountNumber: 3, gauge: .used(0.6), isStale: false, windowTag: nil)
+        ])
+        for (slot, badge) in zip(content.slots, MenuBarBadge.badges(for: content, now: timestamp)) {
+            let row = items.firstIndex { $0.selection.quota.id == slot.selected?.quota.id }
+            XCTAssertEqual(row.map { rows[$0] }, badge)
+        }
     }
 
     func testGaugeReadsUsedFractionClampsItAndKeepsUnknownDistinct() {
@@ -474,7 +747,7 @@ final class UsageDomainTests: XCTestCase {
         )
         let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [])
 
-        let badges = MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: MenuBarPins().toggling(key)), now: timestamp)
+        let badges = MenuBarBadge.badges(for: snapshot.menuBarContent(pins: MenuBarPins().toggling(key)), now: timestamp)
 
         XCTAssertEqual(badges, [MenuBarBadge(letter: "M", accountNumber: nil, gauge: .missing, isStale: false, windowTag: nil)])
     }
@@ -485,11 +758,23 @@ final class UsageDomainTests: XCTestCase {
         let pins = MenuBarPins().toggling(key)
         func isStale(after seconds: TimeInterval) -> Bool {
             let now = timestamp.addingTimeInterval(seconds)
-            return MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: pins), now: now)[0].isStale
+            return MenuBarBadge.badges(for: snapshot.menuBarContent(pins: pins), now: now)[0].isStale
         }
 
         XCTAssertFalse(isStale(after: 899))
         XCTAssertTrue(isStale(after: 900))
+    }
+
+    func testResetPhraseKeepsTheResetDescriptionButStartsWithALowercaseLetter() {
+        let inTwoHours = timestamp.addingTimeInterval(7_500)
+
+        XCTAssertEqual(UsageFormatting.resetPhrase(for: inTwoHours, resetLabel: nil, now: timestamp), "resets in 2h 5m")
+        XCTAssertEqual(UsageFormatting.resetPhrase(for: inTwoHours, resetLabel: "Renews", now: timestamp), "renews in 2h 5m")
+        XCTAssertEqual(UsageFormatting.resetPhrase(for: nil, resetLabel: nil, now: timestamp), "reset unknown")
+        XCTAssertEqual(
+            UsageFormatting.resetPhrase(for: timestamp.addingTimeInterval(-60), resetLabel: nil, now: timestamp),
+            "reset passed · recheck"
+        )
     }
 
     func testProviderRegistryResolvesKnownIdsAndFallsBackToTheRawIdAndItsFirstLetter() {
@@ -500,6 +785,10 @@ final class UsageDomainTests: XCTestCase {
     }
 
     private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
+
+    private func later(hours: Double) -> Date {
+        timestamp.addingTimeInterval(hours * 3_600)
+    }
 
     private func report(
         provider: String = "anthropic",
@@ -525,7 +814,10 @@ final class UsageDomainTests: XCTestCase {
         windowLabel: String? = nil,
         durationMilliseconds: Double? = 18_000_000,
         scope: QuotaScope? = nil,
-        resetsAt: Date? = nil
+        resetsAt: Date? = nil,
+        label: String = "Synthetic window",
+        status: UsageLimitStatus = .available,
+        remainingPercent: Double? = 80
     ) -> UsageQuotaDraft {
         let window = windowID.map {
             QuotaWindow(
@@ -535,15 +827,96 @@ final class UsageDomainTests: XCTestCase {
                 resetLabel: nil
             )
         }
-        return UsageQuotaDraft(
-            id: id,
-            label: "Synthetic window",
-            scope: scope,
-            window: window,
-            amount: UsageAmount(used: 20, limit: 100, remaining: 80, usedFraction: 0.2, remainingFraction: 0.8, unit: .percent),
-            status: .available,
-            resetsAt: resetsAt
-        )
+        let amount = remainingPercent.map {
+            UsageAmount(used: 100 - $0, limit: 100, remaining: $0, usedFraction: (100 - $0) / 100, remainingFraction: $0 / 100, unit: .percent)
+        }
+        return UsageQuotaDraft(id: id, label: label, scope: scope, window: window, amount: amount, status: status, resetsAt: resetsAt)
+    }
+
+    private func account(
+        _ accountID: String,
+        provider: String = "anthropic",
+        label: String,
+        status: UsageLimitStatus,
+        remainingPercent: Double?,
+        resetsInHours: Double?
+    ) -> UsageReportDraft {
+        report(provider: provider, accountID: accountID, quotas: [
+            quota(
+                id: label,
+                resetsAt: resetsInHours.map { later(hours: $0) },
+                label: label,
+                status: status,
+                remainingPercent: remainingPercent
+            )
+        ])
+    }
+
+    // Account N resets in (accountCount + 1 - N) hours, so the last account ranks first. Each account also has an available 5-hour quota.
+    private func attentionSnapshot(accountCount: Int) -> UsageSnapshot {
+        UsageSnapshot(generatedAt: timestamp, reportDrafts: (1...accountCount).map { number in
+            report(accountID: "acct-\(number)", quotas: [
+                quota(id: "session", label: "Claude 5 Hour"),
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    windowLabel: "7 Day",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: Double(accountCount + 1 - number)),
+                    label: "Claude 7 Day",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ])
+        })
+    }
+
+    // Exhausted accounts rank first, then near-limit ones by least remaining, so Codex Account 3 (40% left) ranks fifth and does not fit in
+    // four slots. Claude Account 1 has two quotas that need attention. Codex Account 2 is healthy.
+    private func hiddenCodexSnapshot(codexThreeNeedsAttention: Bool = true) -> UsageSnapshot {
+        UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", label: "Claude 5 Hour", status: .nearLimit, remainingPercent: 5),
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 3),
+                    label: "Claude 7 Day",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ]),
+            report(accountID: "claude-b", quotas: [
+                quota(id: "session", label: "Claude 5 Hour", status: .nearLimit, remainingPercent: 10),
+                quota(id: "weekly", windowID: "7d", durationMilliseconds: 604_800_000, label: "Claude 7 Day")
+            ]),
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(
+                    id: "monthly",
+                    windowID: "30d",
+                    durationMilliseconds: 2_592_000_000,
+                    resetsAt: later(hours: 5),
+                    label: "Cursor Monthly",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ]),
+            report(provider: "openai-codex", accountID: "codex-a", quotas: [
+                quota(id: "session", label: "Codex 5 Hour", status: .nearLimit, remainingPercent: 25)
+            ]),
+            report(provider: "openai-codex", accountID: "codex-b", quotas: [
+                quota(id: "session", label: "Codex 5 Hour", remainingPercent: 90)
+            ]),
+            report(provider: "openai-codex", accountID: "codex-c", quotas: [
+                quota(
+                    id: "session",
+                    label: "Codex 5 Hour",
+                    status: codexThreeNeedsAttention ? .nearLimit : .available,
+                    remainingPercent: codexThreeNeedsAttention ? 40 : 90
+                )
+            ])
+        ])
     }
 
     private func pinKeys(in snapshot: UsageSnapshot) throws -> [QuotaPinKey] {
@@ -556,7 +929,7 @@ final class UsageDomainTests: XCTestCase {
 
     private func pinnedBadges(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [MenuBarBadge] {
         let pins = keys.reduce(MenuBarPins()) { $0.toggling($1) }
-        return MenuBarBadge.badges(for: snapshot.menuBarSlots(pins: pins), now: timestamp)
+        return MenuBarBadge.badges(for: snapshot.menuBarContent(pins: pins), now: timestamp)
     }
 
     private func accountNumbers(pinning keys: [QuotaPinKey], in snapshot: UsageSnapshot) -> [Int?] {
@@ -571,6 +944,7 @@ final class UsageDomainTests: XCTestCase {
         slots.map { slot in
             switch slot {
             case .pinned(let selection): "pinned:\(selection.report.sourceAccount?.accountID ?? "-")"
+            case .attention(let selection): "attention:\(selection.report.sourceAccount?.accountID ?? "-")"
             case .defaulted(let selection): "defaulted:\(selection.report.sourceAccount?.accountID ?? "-")"
             case .missing(let key): "missing:\(key.account.accountID)"
             }
@@ -725,6 +1099,34 @@ final class MenuBarBadgeRendererTests: XCTestCase {
         XCTAssertEqual(dimming, 0.55, accuracy: 0.03)
     }
 
+    func testZeroOverflowDrawsTheSameImageAsNoOverflow() throws {
+        let badges = [badge(.used(0.5)), badge(.used(0.9), number: 2, tag: "7d")]
+
+        let without = try pixels(of: MenuBarBadgeRenderer.image(for: badges))
+        let zero = try pixels(of: MenuBarBadgeRenderer.image(for: badges, overflow: 0))
+
+        XCTAssertGreaterThan(without.peakAlpha(columns: 0..<without.width), 0.5)
+        XCTAssertEqual(CGFloat(zero.width) / 2, 14 + 4 + 14 + measuredTagColumn("7d"))
+        XCTAssertEqual(zero.width, without.width)
+        XCTAssertEqual(zero.visibleBytes, without.visibleBytes)
+    }
+
+    func testOverflowDrawsAPlusCountOneSpacingAfterTheLastBadgeOnItsBottomEdge() throws {
+        let badges = [badge(.used(0.5))]
+        let plain = MenuBarBadgeRenderer.image(for: badges)
+        let overflowed = MenuBarBadgeRenderer.image(for: badges, overflow: 2)
+        let drawn = try pixels(of: overflowed)
+        let spacing = 28..<36
+        let count = 36..<drawn.width
+        let topHalf = 0..<16
+        let bottomHalf = 16..<32
+
+        XCTAssertEqual(overflowed.size.width - plain.size.width, 4 + measuredDigitAdvance("+2"))
+        XCTAssertEqual(drawn.peakAlpha(columns: spacing), 0, accuracy: 0.01)
+        XCTAssertGreaterThan(drawn.peakAlpha(columns: count, rows: bottomHalf), 0.5)
+        XCTAssertEqual(drawn.peakAlpha(columns: count, rows: topHalf), 0, accuracy: 0.01)
+    }
+
     private func badge(_ gauge: BadgeGauge, number: Int? = nil, isStale: Bool = false, tag: String? = nil) -> MenuBarBadge {
         MenuBarBadge(letter: "I", accountNumber: number, gauge: gauge, isStale: isStale, windowTag: tag)
     }
@@ -745,11 +1147,18 @@ final class MenuBarBadgeRendererTests: XCTestCase {
         func peakAlpha(columns: Range<Int>, rows: Range<Int>) -> Double {
             rows.flatMap { row in columns.map { alpha(x: $0, row: row) } }.max() ?? 0
         }
+
+        var visibleBytes: [UInt8] {
+            (0..<bytes.count / bytesPerRow).flatMap { row in bytes[(row * bytesPerRow)..<(row * bytesPerRow + width * 4)] }
+        }
     }
 
     private func render(_ badges: [MenuBarBadge]) throws -> Pixels {
+        try pixels(of: MenuBarBadgeRenderer.image(for: badges))
+    }
+
+    private func pixels(of image: NSImage) throws -> Pixels {
         let scale = 2
-        let image = MenuBarBadgeRenderer.image(for: badges)
         let height = Int(image.size.height) * scale
         let bitmap = try XCTUnwrap(CGContext(
             data: nil,
@@ -774,6 +1183,12 @@ final class MenuBarBadgeRendererTests: XCTestCase {
         let font = NSFont.systemFont(ofSize: 7, weight: .bold)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: tag, attributes: [.font: font]) as CFAttributedString)
         return (1 + CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))).rounded()
+    }
+
+    private func measuredDigitAdvance(_ text: String) -> CGFloat {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .bold)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]) as CFAttributedString)
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)).rounded()
     }
 
     private func sampledShare(of geometry: RoundedSquareGeometry, below height: CGFloat) -> Double {
@@ -942,7 +1357,7 @@ final class QuotaFlowerTests: XCTestCase {
             window: QuotaWindowIdentity(id: "7d")
         )
 
-        let slots = snapshot.menuBarSlots(pins: MenuBarPins().toggling(second).toggling(gone))
+        let slots = snapshot.menuBarContent(pins: MenuBarPins().toggling(second).toggling(gone)).slots
 
         XCTAssertEqual(
             slots.map(UsageStore.accessibilityDescription(of:)),
@@ -963,7 +1378,7 @@ final class QuotaFlowerTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         let store = UsageStore(persistence: AppPersistence(directoryURL: directory))
 
-        XCTAssertEqual(store.freshness(of: snapshot.menuBarSlots(pins: pins)).fetchedAt, older)
+        XCTAssertEqual(store.freshness(of: snapshot.menuBarContent(pins: pins).slots).fetchedAt, older)
         XCTAssertNil(store.freshness(of: []).fetchedAt)
     }
 

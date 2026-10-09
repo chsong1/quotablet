@@ -7,19 +7,20 @@ struct MenuBarLabel: View {
 
     var body: some View {
         let now = store.presentationDate
-        let badges = store.menuBarBadges(now: now)
+        let content = store.menuBarContent
+        let badges = MenuBarBadge.badges(for: content, now: now)
         let summary = store.menuBarAccessibilityLabel(now: now)
-        glyph(for: badges)
+        glyph(for: badges, overflow: content.hiddenAttentionCount)
             .accessibilityLabel(summary)
             .help(summary)
     }
 
     @ViewBuilder
-    private func glyph(for badges: [MenuBarBadge]) -> some View {
+    private func glyph(for badges: [MenuBarBadge], overflow: Int) -> some View {
         if badges.isEmpty {
             Image(systemName: "gauge.with.dots.needle.33percent")
         } else {
-            Image(nsImage: MenuBarBadgeRenderer.image(for: badges))
+            Image(nsImage: MenuBarBadgeRenderer.image(for: badges, overflow: overflow))
                 .renderingMode(.template)
         }
     }
@@ -64,7 +65,14 @@ struct UsagePanel: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    menuBarSelection(now: now)
+                    let attention = store.snapshot?.attentionItems() ?? []
+                    let summaryRepeatsAttention = store.pinnedQuotas.keys.isEmpty && !attention.isEmpty
+                    if !attention.isEmpty {
+                        attentionSection(attention, now: now)
+                    }
+                    if !summaryRepeatsAttention {
+                        menuBarSelection(now: now)
+                    }
                     collectionContent(now: now)
                 }
                 .padding(.horizontal, 18)
@@ -120,8 +128,9 @@ struct UsagePanel: View {
     }
 
     private func menuBarSelection(now: Date) -> some View {
-        let slots = store.menuBarSlots
-        let badges = store.menuBarBadges(now: now)
+        let content = store.menuBarContent
+        let slots = content.slots
+        let badges = MenuBarBadge.badges(for: content, now: now)
         let layout = SummaryLayout.forSlotCount(slots.count)
         return VStack(alignment: .leading, spacing: layout.cardSpacing) {
             HStack(spacing: 6) {
@@ -174,10 +183,45 @@ struct UsagePanel: View {
         .accessibilityIdentifier("quotablet.menu-bar-selection")
     }
 
+    private func attentionSection(_ items: [AttentionItem], now: Date) -> some View {
+        // Every account that needs attention has a row, so none is hidden here, and the menu bar counts the same accounts for its numbers.
+        let badges = MenuBarBadge.badges(for: MenuBarContent(slots: items.map { MenuBarSlot.attention($0.selection) }), now: now)
+        // The rows share one badge column so their text lines up whatever tag or number each badge carries.
+        let badgeWidth = badges.map { MenuBarBadgeRenderer.image(for: [$0], height: 22).size.width }.max() ?? 0
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text("NEEDS ATTENTION · \(items.count)")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .tracking(0.7)
+                Spacer()
+            }
+            ForEach(Array(zip(items, badges).enumerated()), id: \.offset) { _, pair in
+                AttentionRow(
+                    item: pair.0,
+                    badge: pair.1,
+                    badgeWidth: badgeWidth,
+                    accountLabel: accountLabel(for: pair.0.selection.report, number: pair.0.selection.accountNumber),
+                    now: now
+                )
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityIdentifier("quotablet.needs-attention")
+    }
+
     private func selectionKind(for slots: [MenuBarSlot]) -> String {
-        guard let first = slots.first else { return "NONE" }
-        if case .defaulted = first { return "SELECTED BY DEFAULT" }
-        return "PINNED · \(slots.count)"
+        switch slots.first {
+        case nil: "NONE"
+        case .defaulted?: "MOST USED"
+        case .attention?: "NEEDS ATTENTION · \(slots.count)"
+        case .pinned?, .missing?: "PINNED · \(slots.count)"
+        }
     }
 
     @ViewBuilder
@@ -191,6 +235,7 @@ struct UsagePanel: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 245)
             } else {
+                let topAttention = Dictionary(uniqueKeysWithValues: snapshot.accountAttention().map { ($0.selection.report.id, $0) })
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(snapshot.reports) { report in
                         AccountSection(
@@ -199,6 +244,7 @@ struct UsagePanel: View {
                             now: now,
                             freshness: store.freshness(for: report),
                             pins: store.pinnedQuotas,
+                            attention: topAttention[report.id],
                             onTogglePin: { key in Task { await store.togglePin(key) } }
                         )
                     }
@@ -413,24 +459,32 @@ private struct AccountSection: View {
     let now: Date
     let freshness: UsageFreshness
     let pins: MenuBarPins
+    let attention: AttentionItem?
     let onTogglePin: (QuotaPinKey) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(ProviderRegistry.displayName(for: report.provider))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(accountLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 2)
-                Text(providerAge)
-                    .font(.system(size: 10, weight: ageIsStale ? .semibold : .regular))
-                    .foregroundStyle(ageIsStale || freshness.refreshStatus == .failed ? Color.orange : Color.secondary)
-                    .lineLimit(1)
-                    .accessibilityLabel(providerAge)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(ProviderRegistry.displayName(for: report.provider))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Text(accountLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 2)
+                    Text(providerAge)
+                        .font(.system(size: 10, weight: ageIsStale ? .semibold : .regular))
+                        .foregroundStyle(ageIsStale || freshness.refreshStatus == .failed ? Color.orange : Color.secondary)
+                        .lineLimit(1)
+                        .accessibilityLabel(providerAge)
+                }
+                if let attention {
+                    Text(attentionSummary(of: attention))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(attention.urgency.color)
+                }
             }
             if let resetCredits = report.resetCredits {
                 Text("Reset credits · \(resetCredits)")
@@ -471,6 +525,12 @@ private struct AccountSection: View {
     private var providerAge: String {
         freshness.displayLabel(now: now)
     }
+
+    private func attentionSummary(of item: AttentionItem) -> String {
+        let quota = item.selection.quota
+        let reset = UsageFormatting.resetPhrase(for: quota.resetsAt, resetLabel: quota.window?.resetLabel, now: now)
+        return "\(quota.label) \(item.urgency.label.lowercased()) · \(reset)"
+    }
 }
 
 private struct MenuBarSlotRow: View {
@@ -487,7 +547,7 @@ private struct MenuBarSlotRow: View {
                 .renderingMode(.template)
                 .accessibilityHidden(true)
             switch slot {
-            case .pinned(let selection), .defaulted(let selection):
+            case .pinned(let selection), .attention(let selection), .defaulted(let selection):
                 selectionDetails(selection)
             case .missing(let key):
                 missingDetails(key)
@@ -550,6 +610,82 @@ private struct MenuBarSlotRow: View {
     }
 }
 
+private struct AttentionRow: View {
+    let item: AttentionItem
+    let badge: MenuBarBadge
+    let badgeWidth: CGFloat
+    let accountLabel: String
+    let now: Date
+
+    var body: some View {
+        let quota = item.selection.quota
+        return HStack(alignment: .center, spacing: 10) {
+            Image(nsImage: MenuBarBadgeRenderer.image(for: [badge], height: 22))
+                .renderingMode(.template)
+                .frame(width: badgeWidth, alignment: .leading)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(ProviderRegistry.displayName(for: item.selection.report.provider))
+                        .font(.system(size: 13, weight: .semibold))
+                        .layoutPriority(1)
+                    Text(accountLabel)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .truncationMode(.middle)
+                }
+                .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(quota.label)
+                        .foregroundStyle(.secondary)
+                    Text("·")
+                        .foregroundStyle(.secondary)
+                    Text(item.urgency.label)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(item.urgency.color)
+                        .layoutPriority(1)
+                    if badge.isStale {
+                        Text("·")
+                            .foregroundStyle(.secondary)
+                        Text("Stale")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.orange)
+                            .layoutPriority(1)
+                    }
+                }
+                .font(.system(size: 11))
+                .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(UsageFormatting.remainingText(quota.amount))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(resetDescription)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+    }
+
+    private var resetDescription: String {
+        let quota = item.selection.quota
+        return UsageFormatting.resetDescription(for: quota.resetsAt, resetLabel: quota.window?.resetLabel, now: now)
+    }
+
+    private var rowAccessibilityLabel: String {
+        let quota = item.selection.quota
+        let provider = ProviderRegistry.displayName(for: item.selection.report.provider)
+        let remaining = UsageFormatting.remainingText(quota.amount)
+        let stale = badge.isStale ? ", stale" : ""
+        return "\(provider), \(accountLabel), \(quota.label), \(item.urgency.label.lowercased()), \(remaining), \(resetDescription)\(stale)"
+    }
+}
+
 private struct NoticeRow: View {
     let text: String
     let symbol: String
@@ -593,6 +729,15 @@ private struct EmptyState: View {
                 .frame(maxWidth: 270)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+private extension QuotaUrgency {
+    var color: Color {
+        switch self {
+        case .exhausted: .red
+        case .nearLimit: .orange
+        }
     }
 }
 
