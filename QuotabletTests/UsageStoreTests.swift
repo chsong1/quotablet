@@ -8,9 +8,8 @@ final class UsageStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let persistence = AppPersistence(directoryURL: directory)
         let cached = sampleSnapshot(accountID: "acct-cached")
-        let pin = try XCTUnwrap(cached.reports.first?.quotas.first?.pinKey)
         let savedSnapshot = await persistence.save(snapshot: cached)
-        let savedSettings = await persistence.save(settings: PersistedSettings(executablePath: nil, pinnedQuotas: MenuBarPins().toggling(pin)))
+        let savedSettings = await persistence.save(settings: PersistedSettings(executablePath: nil))
         XCTAssertTrue(savedSnapshot)
         XCTAssertTrue(savedSettings)
         let directoryMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
@@ -28,14 +27,11 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot, cached)
         XCTAssertEqual(store.snapshotOrigin, .cached)
         XCTAssertEqual(store.lastError, .timedOut)
-        XCTAssertEqual(store.pinnedQuotas.keys, [pin])
 
         await store.refresh()
         XCTAssertEqual(store.snapshot, empty)
         XCTAssertEqual(store.snapshotOrigin, .live)
         XCTAssertNil(store.lastError)
-        XCTAssertEqual(store.pinnedQuotas.keys, [pin])
-        XCTAssertEqual(store.menuBarContent, MenuBarContent(slots: [.missing(pin)]))
 
         await store.shutdown()
     }
@@ -146,117 +142,88 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertFalse(store.isRefreshing)
     }
 
-    func testSettingsRoundTripKeepsPinOrderAndAFileWithoutPinsDecodesToNone() async throws {
+    func testASettingsFileWithPinnedQuotasStillDecodesAndASaveNoLongerWritesThemBack() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let persistence = AppPersistence(directoryURL: directory)
-        let keys = try sampleSnapshot(accountIDs: ["acct-a", "acct-b"]).reports.map { try XCTUnwrap($0.quotas.first?.pinKey) }
-        let pins = MenuBarPins().toggling(keys[1]).toggling(keys[0])
-
-        let saved = await persistence.save(settings: PersistedSettings(executablePath: "/custom/omp", pinnedQuotas: pins))
-        let reloaded = await persistence.load()
-
-        XCTAssertTrue(saved)
-        XCTAssertEqual(reloaded.settings.pinnedQuotas.keys, [keys[1], keys[0]])
-        XCTAssertEqual(reloaded.settings.executablePath, "/custom/omp")
-
         let settingsURL = directory.appendingPathComponent("settings.json")
+        let pinned = #"{"executablePath":"/custom/omp","pinnedQuotas":[{"account":{"provider":"anthropic","accountID":"acct-a"},"limitID":"session","window":{"id":"5h"}}]}"#
+        try Data(pinned.utf8).write(to: settingsURL)
+
+        let loaded = await persistence.load()
+        let saved = await persistence.save(settings: loaded.settings)
+        let written = try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as? [String: String]
+
+        XCTAssertEqual(loaded.settings, PersistedSettings(executablePath: "/custom/omp"))
+        XCTAssertTrue(saved)
+        XCTAssertEqual(written, ["executablePath": "/custom/omp"])
+
         try Data(#"{"executablePath":"/custom/omp","pinnedQuota":"legacy"}"#.utf8).write(to: settingsURL)
         let legacy = await persistence.load()
-        XCTAssertEqual(legacy.settings.pinnedQuotas.keys, [])
         XCTAssertEqual(legacy.settings.executablePath, "/custom/omp")
 
         try Data("{}".utf8).write(to: settingsURL)
         let empty = await persistence.load()
-        XCTAssertEqual(empty.settings.pinnedQuotas.keys, [])
         XCTAssertNil(empty.settings.executablePath)
     }
 
-    func testTogglingAndRemovingPinsUpdatesSlotsAndPersistsTheOrder() async throws {
+    func testASavedSnapshotThatStillCarriesPinKeysStillLoads() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let persistence = AppPersistence(directoryURL: directory)
-        let snapshot = sampleSnapshot(accountIDs: ["acct-a", "acct-b"])
-        let keys = try snapshot.reports.map { try XCTUnwrap($0.quotas.first?.pinKey) }
-        let fetcher = SequencedFetcher([.success(snapshot)])
-        let store = UsageStore(persistence: persistence) { configuration in
-            try await fetcher.fetch(configuration)
-        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let snapshot = sampleSnapshot(accountID: "acct-a")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        var reports = try XCTUnwrap(object["reports"] as? [[String: Any]])
+        var quotas = try XCTUnwrap(reports[0]["quotas"] as? [[String: Any]])
+        quotas[0]["pinKey"] = ["account": ["provider": "anthropic", "accountID": "acct-a"], "limitID": "session-limit", "window": ["id": "5h"]]
+        reports[0]["quotas"] = quotas
+        object["reports"] = reports
+        try JSONSerialization.data(withJSONObject: object).write(to: directory.appendingPathComponent("usage-snapshot.json"))
 
-        XCTAssertEqual(store.menuBarContent, MenuBarContent(slots: []))
-        await store.togglePin(keys[1])
-        XCTAssertEqual(store.menuBarContent, MenuBarContent(slots: [.missing(keys[1])]))
+        let loaded = await AppPersistence(directoryURL: directory).load()
 
-        await store.refresh()
-        await store.togglePin(keys[0])
-        XCTAssertEqual(store.menuBarContent.slots.compactMap { $0.selected?.quota.pinKey }, [keys[1], keys[0]])
-        let afterAdding = await persistence.load()
-        XCTAssertEqual(afterAdding.settings.pinnedQuotas.keys, [keys[1], keys[0]])
+        XCTAssertEqual(loaded.snapshot?.revision, snapshot.revision)
+        XCTAssertEqual(loaded.snapshot?.reports.first?.quotas.first?.label, "Session")
+    }
 
-        await store.removePin(keys[1])
-        XCTAssertEqual(store.menuBarContent.slots.compactMap { $0.selected?.quota.pinKey }, [keys[0]])
-        let afterRemoving = await persistence.load()
-        XCTAssertEqual(afterRemoving.settings.pinnedQuotas.keys, [keys[0]])
+    func testAccessibilityLabelNamesEachProviderWithItsCombinedUsageThenHowOldTheDataIs() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = await refreshedStore(RealisticFixture.snapshot(), directory: directory)
+        let sentences = "Claude 79% used across 5 accounts; Codex 94% used across 3 accounts; Grok 1% used, 1 account; Cursor 100% used, 1 account"
+
+        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "\(sentences). Provider data under 1m old")
+        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt.addingTimeInterval(900)), "\(sentences). Stale · Provider data 15m old")
 
         await store.shutdown()
     }
 
-    func testAccessibilityLabelNamesEachAttentionAccountAndCountsTheRest() async throws {
+    func testAccessibilityLabelSaysHowManyAccountsTheFigureCoversWhenSomeAreUnmeasured() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let store = await refreshedStore(attentionSnapshot(accountCount: 6), directory: directory)
-        let entries = [
-            "Claude Account 6, Claude 7 Day, 0% left, exhausted, resets in 1h 0m",
-            "Claude Account 5, Claude 7 Day, 0% left, exhausted, resets in 2h 0m",
-            "Claude Account 4, Claude 7 Day, 0% left, exhausted, resets in 3h 0m",
-            "Claude Account 3, Claude 7 Day, 0% left, exhausted, resets in 4h 0m",
-            "and 2 more accounts"
-        ]
+        let store = await refreshedStore(RealisticFixture.snapshot(unmeasuredClaudeAccounts: 1), directory: directory)
 
         XCTAssertEqual(
             store.menuBarAccessibilityLabel(now: fetchedAt),
-            "Needs attention: \(entries.joined(separator: "; ")). Provider data under 1m old"
-        )
-        XCTAssertEqual(store.menuBarContent.hiddenAttentionCount, 2)
-
-        await store.shutdown()
-    }
-
-    func testAccessibilityLabelSaysOneMoreAccountInTheSingular() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = await refreshedStore(attentionSnapshot(accountCount: 5), directory: directory)
-        let entries = [
-            "Claude Account 5, Claude 7 Day, 0% left, exhausted, resets in 1h 0m",
-            "Claude Account 4, Claude 7 Day, 0% left, exhausted, resets in 2h 0m",
-            "Claude Account 3, Claude 7 Day, 0% left, exhausted, resets in 3h 0m",
-            "Claude Account 2, Claude 7 Day, 0% left, exhausted, resets in 4h 0m",
-            "and 1 more account"
-        ]
-
-        XCTAssertEqual(
-            store.menuBarAccessibilityLabel(now: fetchedAt),
-            "Needs attention: \(entries.joined(separator: "; ")). Provider data under 1m old"
+            "Claude 74% used across 4 of 5 accounts; Codex 94% used across 3 accounts; Grok 1% used, 1 account; Cursor 100% used, 1 account. "
+                + "Provider data under 1m old"
         )
 
         await store.shutdown()
     }
 
-    func testAccessibilityLabelLeadsWithMostUsedWithoutPinsAndStaysPlainForPinsAndAnEmptyBar() async throws {
+    func testAccessibilityLabelIsPlainBeforeAnySnapshotAndAfterAnEmptyOne() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let snapshot = sampleSnapshot(accountIDs: ["acct-a", "acct-b"])
-        let second = try XCTUnwrap(snapshot.reports[1].quotas.first?.pinKey)
-        let fetcher = SequencedFetcher([.success(snapshot)])
+        let fetcher = SequencedFetcher([.success(UsageSnapshot(generatedAt: fetchedAt, reportDrafts: []))])
         let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
             try await fetcher.fetch(configuration)
         }
 
         XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Quotablet. No quota is available for the menu bar. Waiting for OMP")
         await store.refresh()
-        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Most used: Claude Account 1, Session, 80% left. Provider data under 1m old")
-        await store.togglePin(second)
-        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Claude Account 2, Session, 80% left. Provider data under 1m old")
+        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Quotablet. No quota is available for the menu bar. Provider age unknown")
 
         await store.shutdown()
     }
@@ -318,35 +285,6 @@ final class UsageStoreTests: XCTestCase {
         }
         await store.refresh()
         return store
-    }
-
-    // Account N resets in (accountCount + 1 - N) hours, so the last account ranks first.
-    private func attentionSnapshot(accountCount: Int) -> UsageSnapshot {
-        let drafts = (1...accountCount).map { number -> UsageReportDraft in
-            let exhausted = UsageQuotaDraft(
-                id: "weekly",
-                label: "Claude 7 Day",
-                scope: nil,
-                window: QuotaWindow(
-                    identity: QuotaWindowIdentity(id: "7d"),
-                    label: "7 Day",
-                    durationMilliseconds: 604_800_000,
-                    resetLabel: nil
-                ),
-                amount: UsageAmount(used: 100, limit: 100, remaining: 0, usedFraction: 1, remainingFraction: 0, unit: .percent),
-                status: .exhausted,
-                resetsAt: fetchedAt.addingTimeInterval(Double(accountCount + 1 - number) * 3_600)
-            )
-            return UsageReportDraft(
-                provider: "anthropic",
-                sourceAccount: SourceAccountIdentity(accountID: "acct-\(number)", organizationID: nil, projectID: nil),
-                privateDisplayLabel: nil,
-                fetchedAt: fetchedAt,
-                resetCredits: nil,
-                quotas: [exhausted]
-            )
-        }
-        return UsageSnapshot(generatedAt: fetchedAt, reportDrafts: drafts)
     }
 }
 

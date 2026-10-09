@@ -3,23 +3,6 @@ import Foundation
 
 struct PersistedSettings: Codable, Equatable, Sendable {
     var executablePath: String?
-    var pinnedQuotas: MenuBarPins
-
-    init(executablePath: String?, pinnedQuotas: MenuBarPins) {
-        self.executablePath = executablePath
-        self.pinnedQuotas = pinnedQuotas
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
-        pinnedQuotas = try container.decodeIfPresent(MenuBarPins.self, forKey: .pinnedQuotas) ?? MenuBarPins()
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case executablePath
-        case pinnedQuotas
-    }
 }
 
 struct StoredApplicationState: Sendable {
@@ -33,6 +16,8 @@ final class AppPersistence: @unchecked Sendable {
     private let directoryURL: URL
     private let settingsURL: URL
     private let snapshotURL: URL
+    // The user installs logo files here. The app only reads them.
+    let logosDirectoryURL: URL
 
     init(directoryURL: URL? = nil) {
         let supportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -40,6 +25,7 @@ final class AppPersistence: @unchecked Sendable {
         self.directoryURL = directoryURL ?? supportDirectory.appendingPathComponent("Quotablet", isDirectory: true)
         settingsURL = self.directoryURL.appendingPathComponent("settings.json")
         snapshotURL = self.directoryURL.appendingPathComponent("usage-snapshot.json")
+        logosDirectoryURL = self.directoryURL.appendingPathComponent("Logos", isDirectory: true)
     }
 
     func load() async -> StoredApplicationState {
@@ -74,7 +60,7 @@ final class AppPersistence: @unchecked Sendable {
     }
 
     private func loadSynchronously() -> StoredApplicationState {
-        var settings = PersistedSettings(executablePath: nil, pinnedQuotas: MenuBarPins())
+        var settings = PersistedSettings(executablePath: nil)
         if let data = try? Data(contentsOf: settingsURL),
            let decoded = try? JSONDecoder().decode(PersistedSettings.self, from: data) {
             settings = decoded

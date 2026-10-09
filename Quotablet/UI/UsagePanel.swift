@@ -4,24 +4,26 @@ import UniformTypeIdentifiers
 
 struct MenuBarLabel: View {
     @Bindable var store: UsageStore
+    // The logo variant is picked when AppKit draws the image, so SwiftUI must build a new image when the menu bar changes appearance.
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let now = store.presentationDate
-        let content = store.menuBarContent
-        let badges = MenuBarBadge.badges(for: content, now: now)
+        let providers = store.snapshot?.providerUsage(now: now) ?? []
         let summary = store.menuBarAccessibilityLabel(now: now)
-        glyph(for: badges, overflow: content.hiddenAttentionCount)
+        glyph(for: providers)
             .accessibilityLabel(summary)
             .help(summary)
     }
 
     @ViewBuilder
-    private func glyph(for badges: [MenuBarBadge], overflow: Int) -> some View {
-        if badges.isEmpty {
+    private func glyph(for providers: [ProviderUsage]) -> some View {
+        if providers.isEmpty {
             Image(systemName: "gauge.with.dots.needle.33percent")
         } else {
-            Image(nsImage: MenuBarBadgeRenderer.image(for: badges, overflow: overflow))
-                .renderingMode(.template)
+            Image(nsImage: ProviderMenuBarRenderer.image(for: providers, logos: store.logos))
+                .renderingMode(.original)
+                .id(colorScheme)
         }
     }
 }
@@ -68,9 +70,6 @@ struct UsagePanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     statusGroups(now: now)
-                    if !store.pinnedQuotas.keys.isEmpty {
-                        menuBarSelection(now: now)
-                    }
                     collectionContent(now: now)
                 }
                 .padding(.horizontal, 18)
@@ -123,51 +122,6 @@ struct UsagePanel: View {
             return store.snapshotOrigin == .cached ? "Saved snapshot · no usage reports" : "No usage reports"
         }
         return store.snapshotOrigin == .cached ? "Saved snapshot" : "OMP snapshot received"
-    }
-
-    private func menuBarSelection(now: Date) -> some View {
-        let content = store.menuBarContent
-        let slots = content.slots
-        let badges = MenuBarBadge.badges(for: content, now: now)
-        let layout = SummaryLayout.forSlotCount(slots.count)
-        return VStack(alignment: .leading, spacing: layout.cardSpacing) {
-            HStack(spacing: 6) {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text("MENU BAR SUMMARY")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .tracking(0.7)
-                Spacer()
-                Text("PINNED · \(slots.count)")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            switch layout {
-            case .list:
-                ForEach(Array(zip(slots, badges).enumerated()), id: \.offset) { _, pair in
-                    MenuBarSlotRow(
-                        slot: pair.0,
-                        badge: pair.1,
-                        accountLabel: pair.0.selected.map { accountLabel(for: $0.report, number: $0.accountNumber) },
-                        freshness: store.freshness(for: pair.0.selected?.report),
-                        now: now,
-                        onRemove: { key in Task { await store.removePin(key) } }
-                    )
-                }
-            case .flower:
-                QuotaFlowerSummary(
-                    slots: slots,
-                    badges: badges,
-                    freshness: store.freshness(of: slots),
-                    now: now,
-                    onRemove: { key in Task { await store.removePin(key) } }
-                )
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, layout.cardVerticalPadding)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .accessibilityIdentifier("quotablet.menu-bar-selection")
     }
 
     @ViewBuilder
@@ -237,9 +191,7 @@ struct UsagePanel: View {
                             accountLabel: accountLabel(for: report, number: snapshot.accountNumber(of: report)),
                             now: now,
                             freshness: store.freshness(for: report),
-                            pins: store.pinnedQuotas,
-                            attention: topAttention[report.id],
-                            onTogglePin: { key in Task { await store.togglePin(key) } }
+                            attention: topAttention[report.id]
                         )
                     }
                 }
@@ -316,8 +268,6 @@ private struct UsageQuotaRow: View {
     let provider: String
     let accountLabel: String
     let now: Date
-    let isPinned: Bool
-    let onTogglePin: (QuotaPinKey) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -350,19 +300,6 @@ private struct UsageQuotaRow: View {
                     .minimumScaleFactor(0.8)
                     .frame(minWidth: 74, alignment: .trailing)
                     .accessibilityHidden(true)
-                Button {
-                    guard let key = quota.pinKey else { return }
-                    onTogglePin(key)
-                } label: {
-                    Image(systemName: isPinned ? "pin.fill" : "pin")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(quota.pinKey == nil)
-                .accessibilityLabel(pinAccessibilityLabel)
-                .help(quota.pinKey == nil ? "This quota has no unique stable account and window key." : (isPinned ? "Remove this quota from the menu bar." : "Pin this quota in the menu bar."))
             }
             if let progress = quota.amount?.progress {
                 HStack(spacing: 6) {
@@ -411,13 +348,6 @@ private struct UsageQuotaRow: View {
         )
     }
 
-    private var pinAccessibilityLabel: String {
-        guard quota.pinKey != nil else {
-            return "Pin unavailable for \(quota.label) because its account and window identity is ambiguous"
-        }
-        return isPinned ? "Unpin \(quota.label) from the menu bar" : "Pin \(quota.label) in the menu bar"
-    }
-
     private var rowAccessibilityLabel: String {
         let remaining = UsageFormatting.remainingText(quota.amount)
         let tier = quota.scope?.tier.map { ", tier \($0)" } ?? ""
@@ -432,9 +362,7 @@ private struct AccountSection: View {
     let accountLabel: String
     let now: Date
     let freshness: UsageFreshness
-    let pins: MenuBarPins
     let attention: AttentionItem?
-    let onTogglePin: (QuotaPinKey) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -477,9 +405,7 @@ private struct AccountSection: View {
                             quota: quota,
                             provider: report.provider,
                             accountLabel: accountLabel,
-                            now: now,
-                            isPinned: quota.pinKey.map { pins.contains($0) } ?? false,
-                            onTogglePin: onTogglePin
+                            now: now
                         )
                         if quota.id != report.quotas.last?.id {
                             Divider().padding(.vertical, 9)
@@ -504,83 +430,6 @@ private struct AccountSection: View {
         let quota = item.selection.quota
         let reset = UsageFormatting.resetPhrase(for: quota.resetsAt, resetLabel: quota.window?.resetLabel, now: now)
         return "\(quota.label) \(item.urgency.label.lowercased()) · \(reset)"
-    }
-}
-
-private struct MenuBarSlotRow: View {
-    let slot: MenuBarSlot
-    let badge: MenuBarBadge
-    let accountLabel: String?
-    let freshness: UsageFreshness
-    let now: Date
-    let onRemove: (QuotaPinKey) -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(nsImage: MenuBarBadgeRenderer.image(for: [badge], height: 22))
-                .renderingMode(.template)
-                .accessibilityHidden(true)
-            switch slot {
-            case .pinned(let selection), .attention(let selection), .defaulted(let selection):
-                selectionDetails(selection)
-            case .missing(let key):
-                missingDetails(key)
-            }
-        }
-    }
-
-    private func selectionDetails(_ selection: SelectedQuota) -> some View {
-        let remaining = UsageFormatting.remainingText(selection.quota.amount)
-        let needsAttention = freshness.isStale(at: now) || freshness.refreshStatus == .failed
-        return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(ProviderRegistry.displayName(for: selection.report.provider))
-                        .font(.system(size: 13, weight: .semibold))
-                    if let accountLabel {
-                        Text(accountLabel)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .lineLimit(1)
-                Text(selection.quota.label)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(remaining)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded).monospacedDigit())
-                    .lineLimit(1)
-                    .accessibilityLabel(remaining)
-                Text(freshness.displayLabel(now: now))
-                    .font(.system(size: 9, weight: needsAttention ? .semibold : .regular))
-                    .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private func missingDetails(_ key: QuotaPinKey) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Pinned quota unavailable")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(freshness.displayLabel(now: now))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            Button("Remove") {
-                onRemove(key)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Remove unavailable pinned quota")
-        }
     }
 }
 
