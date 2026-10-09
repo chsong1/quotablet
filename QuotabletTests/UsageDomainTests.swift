@@ -696,27 +696,6 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertEqual(MenuBarBadge.badges(for: content, now: timestamp).map(\.accountNumber), [1, nil, 2, nil])
     }
 
-    func testTheMenuBarAndThePanelRowsGiveOneQuotaTheSameBadge() {
-        let snapshot = hiddenCodexSnapshot()
-        let content = snapshot.menuBarContent(pins: MenuBarPins())
-        let items = snapshot.attentionItems()
-
-        let rows = MenuBarBadge.badges(for: MenuBarContent(slots: items.map { MenuBarSlot.attention($0.selection) }), now: timestamp)
-
-        XCTAssertEqual(rows, [
-            MenuBarBadge(letter: "C", accountNumber: 1, gauge: .used(1), isStale: false, windowTag: "7d"),
-            MenuBarBadge(letter: "U", accountNumber: nil, gauge: .used(1), isStale: false, windowTag: nil),
-            MenuBarBadge(letter: "C", accountNumber: 1, gauge: .used(0.95), isStale: false, windowTag: "5h"),
-            MenuBarBadge(letter: "C", accountNumber: 2, gauge: .used(0.9), isStale: false, windowTag: "5h"),
-            MenuBarBadge(letter: "O", accountNumber: 1, gauge: .used(0.75), isStale: false, windowTag: nil),
-            MenuBarBadge(letter: "O", accountNumber: 3, gauge: .used(0.6), isStale: false, windowTag: nil)
-        ])
-        for (slot, badge) in zip(content.slots, MenuBarBadge.badges(for: content, now: timestamp)) {
-            let row = items.firstIndex { $0.selection.quota.id == slot.selected?.quota.id }
-            XCTAssertEqual(row.map { rows[$0] }, badge)
-        }
-    }
-
     func testGaugeReadsUsedFractionClampsItAndKeepsUnknownDistinct() {
         func amount(usedFraction: Double?, remainingFraction: Double? = nil) -> UsageAmount {
             UsageAmount(
@@ -782,6 +761,293 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertEqual(ProviderRegistry.badgeLetter(for: "openai-codex"), "O")
         XCTAssertEqual(ProviderRegistry.displayName(for: "mistral"), "mistral")
         XCTAssertEqual(ProviderRegistry.badgeLetter(for: "mistral"), "M")
+    }
+
+    func testStatusOverviewMergesAnAccountsQuotasThatShareAnUrgencyAndAResetMinute() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(id: "models", windowID: "monthly", durationMilliseconds: nil, resetsAt: later(hours: 20), label: "Cursor Models", status: .exhausted, remainingPercent: nil),
+                quota(id: "other", windowID: "monthly", durationMilliseconds: nil, resetsAt: later(hours: 20).addingTimeInterval(59), label: "Other Models", status: .exhausted, remainingPercent: 0)
+            ])
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.exhausted.map { $0.quotas.map(\.quota.label) }, [["Cursor Models", "Other Models"]])
+        XCTAssertEqual(overview.exhausted.map(\.resetsAt), [later(hours: 20)])
+        XCTAssertEqual(overview.exhausted.map(\.accountNumber), [1])
+        XCTAssertEqual(overview.exhausted.map(\.urgency), [.exhausted])
+        XCTAssertTrue(overview.nearLimit.isEmpty)
+        XCTAssertTrue(overview.ok.isEmpty)
+    }
+
+    func testStatusOverviewKeepsQuotasThatResetAtDifferentTimesOnSeparateLinesEarlierResetFirst() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(id: "models", windowID: "monthly", durationMilliseconds: nil, resetsAt: later(hours: 30), label: "Cursor Models", status: .exhausted, remainingPercent: 0),
+                quota(id: "other", windowID: "monthly", durationMilliseconds: nil, resetsAt: later(hours: 20), label: "Other Models", status: .exhausted, remainingPercent: 0)
+            ])
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.exhausted.map { $0.quotas.map(\.quota.label) }, [["Other Models"], ["Cursor Models"]])
+        XCTAssertEqual(overview.exhausted.map(\.resetsAt), [later(hours: 20), later(hours: 30)])
+    }
+
+    func testStatusOverviewMergesResetsInTheSameMinuteButNotInTheNextOne() {
+        let reset = later(hours: 6)
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "first", resetsAt: reset, label: "first", status: .exhausted, remainingPercent: 0),
+                quota(id: "second", resetsAt: reset.addingTimeInterval(59), label: "second", status: .exhausted, remainingPercent: 0),
+                quota(id: "third", resetsAt: reset.addingTimeInterval(60), label: "third", status: .exhausted, remainingPercent: 0)
+            ])
+        ])
+
+        XCTAssertEqual(snapshot.statusOverview().exhausted.map { $0.quotas.map(\.quota.label) }, [["first", "second"], ["third"]])
+    }
+
+    func testStatusOverviewMergesQuotasWithoutAResetTimeOnlyWithEachOther() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "a", resetsAt: nil, label: "a", status: .exhausted, remainingPercent: 0),
+                quota(id: "b", resetsAt: later(hours: 5), label: "b", status: .exhausted, remainingPercent: 0),
+                quota(id: "c", resetsAt: nil, label: "c", status: .exhausted, remainingPercent: 0)
+            ])
+        ])
+
+        let lines = snapshot.statusOverview().exhausted
+
+        XCTAssertEqual(lines.map { $0.quotas.map(\.quota.label) }, [["b"], ["a", "c"]])
+        XCTAssertEqual(lines.map(\.resetsAt), [later(hours: 5), nil])
+    }
+
+    func testStatusOverviewListsAnAccountWithAnExhaustedQuotaOnlyUnderExhaustedWhateverElseWorks() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", label: "Claude 5 Hour", remainingPercent: 80),
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 9),
+                    label: "Claude 7 Day",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ]),
+            report(accountID: "claude-b", quotas: [quota(id: "session", label: "Claude 5 Hour", remainingPercent: 60)])
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.exhausted.map { $0.quotas.map(\.quota.label) }, [["Claude 7 Day"]])
+        XCTAssertEqual(overview.exhausted.map(\.report.sourceAccount?.accountID), ["claude-a"])
+        XCTAssertEqual(overview.ok.map(\.report.sourceAccount?.accountID), ["claude-b"])
+    }
+
+    func testStatusOverviewKeepsANearLimitAccountOutOfOK() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "near limit 5%", status: .nearLimit, remainingPercent: 5, resetsInHours: 4),
+            account("acct-b", label: "available 50%", status: .available, remainingPercent: 50, resetsInHours: 4)
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.nearLimit.map { $0.quotas.map(\.quota.label) }, [["near limit 5%"]])
+        XCTAssertEqual(overview.ok.map(\.lead.quota.label), ["available 50%"])
+        XCTAssertTrue(overview.exhausted.isEmpty)
+    }
+
+    func testStatusOverviewGivesAnAccountWithBothUrgenciesALineInEachGroup() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", resetsAt: later(hours: 2), label: "Claude 5 Hour", status: .nearLimit, remainingPercent: 8),
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 9),
+                    label: "Claude 7 Day",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ])
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.exhausted.map { $0.quotas.map(\.quota.label) }, [["Claude 7 Day"]])
+        XCTAssertEqual(overview.nearLimit.map { $0.quotas.map(\.quota.label) }, [["Claude 5 Hour"]])
+        XCTAssertTrue(overview.ok.isEmpty)
+    }
+
+    func testStatusOverviewOrdersOKAccountsMostUsedFirstAndLeadsEachWithItsLeastRemainingQuota() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            account("acct-a", label: "60% left", status: .available, remainingPercent: 60, resetsInHours: 1),
+            report(accountID: "acct-b", quotas: [
+                quota(id: "session", label: "b 5 Hour 90% left", remainingPercent: 90),
+                quota(id: "weekly", windowID: "7d", label: "b 7 Day 15% left", remainingPercent: 15)
+            ]),
+            account("acct-c", label: "unknown", status: .available, remainingPercent: nil, resetsInHours: 1),
+            account("acct-d", label: "40% left", status: .available, remainingPercent: 40, resetsInHours: 2)
+        ])
+
+        let ok = snapshot.statusOverview().ok
+
+        XCTAssertEqual(ok.map(\.lead.quota.label), ["b 7 Day 15% left", "40% left", "60% left", "unknown"])
+        XCTAssertEqual(ok.map(\.accountNumber), [2, 4, 1, 3])
+    }
+
+    func testStatusOverviewLeadsAnAccountWithNoKnownUsageByTheStableOrderOfItsQuotas() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-a", quotas: [
+                quota(id: "weekly", windowID: "7d", label: "weekly", remainingPercent: nil),
+                quota(id: "session", windowID: "5h", label: "session", remainingPercent: nil)
+            ])
+        ])
+
+        XCTAssertEqual(snapshot.statusOverview().ok.map(\.lead.quota.label), ["session"])
+    }
+
+    func testStatusOverviewCountsLinesNotAccountsOrQuotas() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [
+                quota(id: "session", label: "Claude 5 Hour", remainingPercent: 80),
+                quota(
+                    id: "weekly",
+                    windowID: "7d",
+                    durationMilliseconds: 604_800_000,
+                    resetsAt: later(hours: 9),
+                    label: "Claude 7 Day",
+                    status: .exhausted,
+                    remainingPercent: 0
+                )
+            ]),
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(id: "models", windowID: "monthly", durationMilliseconds: nil, resetsAt: later(hours: 20), label: "Cursor Models", status: .exhausted, remainingPercent: nil),
+                quota(id: "other", windowID: "monthly", durationMilliseconds: nil, resetsAt: later(hours: 20), label: "Other Models", status: .exhausted, remainingPercent: 0)
+            ]),
+            account("codex-a", provider: "openai-codex", label: "Codex 7 days", status: .nearLimit, remainingPercent: 3, resetsInHours: 110),
+            account("codex-b", provider: "openai-codex", label: "Codex 7 days", status: .available, remainingPercent: 12, resetsInHours: 110),
+            account("claude-b", label: "Claude 7 Day", status: .available, remainingPercent: 22, resetsInHours: 120),
+            account("grok-a", provider: "xai-oauth", label: "Grok Weekly", status: .available, remainingPercent: 99, resetsInHours: 140)
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.exhausted.count, 2)
+        XCTAssertEqual(overview.nearLimit.count, 1)
+        XCTAssertEqual(overview.ok.count, 3)
+        XCTAssertEqual(overview.exhausted.map(\.report.provider), ["anthropic", "cursor"])
+        XCTAssertEqual(overview.ok.map(\.report.sourceAccount?.accountID), ["codex-b", "claude-b", "grok-a"])
+    }
+
+    func testStatusOverviewLeavesAnAccountWithoutQuotasOutOfEveryGroup() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "empty", quotas: []),
+            report(accountID: "claude-b", quotas: [quota(id: "session", remainingPercent: 70)])
+        ])
+
+        let overview = snapshot.statusOverview()
+
+        XCTAssertEqual(overview.ok.map(\.report.sourceAccount?.accountID), ["claude-b"])
+        XCTAssertEqual(overview.ok.map(\.accountNumber), [2])
+        XCTAssertTrue(overview.exhausted.isEmpty)
+        XCTAssertTrue(overview.nearLimit.isEmpty)
+        XCTAssertTrue(UsageSnapshot(generatedAt: timestamp, reportDrafts: []).statusOverview().isEmpty)
+    }
+
+    func testAnAccountTakesTheStatusOfItsMostUrgentQuota() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "acct-a", quotas: [quota(id: "session", remainingPercent: 80)]),
+            report(accountID: "acct-b", quotas: [quota(id: "session", status: .nearLimit, remainingPercent: 8)]),
+            report(accountID: "acct-c", quotas: [
+                quota(id: "session", status: .nearLimit, remainingPercent: 8),
+                quota(id: "weekly", windowID: "7d", status: .exhausted, remainingPercent: 0)
+            ]),
+            report(accountID: "acct-d", quotas: [])
+        ])
+
+        XCTAssertEqual(snapshot.reports.map(\.accountStatus), [.ok, .nearLimit, .exhausted, .ok])
+        XCTAssertLessThan(AccountStatus.exhausted, .nearLimit)
+        XCTAssertLessThan(AccountStatus.nearLimit, .ok)
+    }
+
+    func testCountdownGivesBareTextForTheTimeLeftAndSeparatesAPassedResetFromAnUnknownOne() {
+        func countdown(minutes: Double) -> ResetCountdown {
+            UsageFormatting.countdown(to: timestamp.addingTimeInterval(minutes * 60), now: timestamp)
+        }
+
+        XCTAssertEqual(countdown(minutes: 561), .remaining("9h 21m"))
+        XCTAssertEqual(countdown(minutes: 5_242), .remaining("3d 15h"))
+        XCTAssertEqual(countdown(minutes: 0.5), .remaining("1m"))
+        XCTAssertEqual(countdown(minutes: 59), .remaining("59m"))
+        XCTAssertEqual(countdown(minutes: 60), .remaining("1h 0m"))
+        XCTAssertEqual(countdown(minutes: 1_440), .remaining("1d 0h"))
+        XCTAssertEqual(UsageFormatting.countdown(to: nil, now: timestamp), .unknown)
+        XCTAssertEqual(countdown(minutes: -1), .passed)
+        XCTAssertEqual(countdown(minutes: 0), .passed)
+    }
+
+    func testShortLabelNamesTheWindowLengthAndKeepsAParenthetical() {
+        let quotas = builtQuotas(from: [
+            quota(id: "weekly", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, label: "Claude 7 Day"),
+            quota(id: "fable", windowID: "7d-fable", windowLabel: "7 Day", durationMilliseconds: 604_800_000, label: "Claude 7 Day (Fable)"),
+            quota(id: "session", windowID: "5h", windowLabel: "5 Hour", durationMilliseconds: 18_000_000, label: "Claude 5 Hour"),
+            quota(id: "weekly-credits", windowID: "weekly", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Grok Build (Weekly Credits)"),
+            quota(id: "quarterly", windowID: "weekly", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Grok Build (Quarterly)"),
+            quota(id: "models", windowID: "monthly", durationMilliseconds: nil, label: "Cursor Models"),
+            quota(id: "credits", windowID: nil, label: "SuperGrok Weekly Credits")
+        ])
+
+        XCTAssertEqual(
+            quotas.map(UsageFormatting.shortLabel(for:)),
+            ["7d", "7d Fable", "5h", "7d Weekly Credits", "7d Quarterly", "Cursor Models", "SuperGrok Weekly Credits"]
+        )
+    }
+
+    func testShortLabelDropsAParentheticalThatOnlyRestatesTheWindow() {
+        let quotas = builtQuotas(from: [
+            quota(id: "build", windowID: "weekly", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Grok Build (Weekly)"),
+            quota(id: "hourly", windowID: "1h", windowLabel: "1 Hour", durationMilliseconds: 3_600_000, label: "Synthetic window (Hourly)"),
+            quota(id: "daily", windowID: "1d", windowLabel: "1 Day", durationMilliseconds: 86_400_000, label: "Synthetic window (daily)"),
+            quota(id: "weekly", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, label: "Synthetic window (WEEKLY)"),
+            quota(id: "monthly", windowID: "30d", windowLabel: "30 Day", durationMilliseconds: 2_592_000_000, label: "Synthetic window (Monthly)"),
+            quota(id: "quarterly", windowID: "quarterly", windowLabel: " Quarterly ", durationMilliseconds: 7_776_000_000, label: "Synthetic window (quarterly)")
+        ])
+
+        XCTAssertEqual(quotas.map(UsageFormatting.shortLabel(for:)), ["7d", "1h", "1d", "7d", "30d", "90d"])
+    }
+
+    func testPercentLeftRoundsTheRemainingShareAndSaysNothingWhenItIsUnknown() {
+        let dollars = UsageQuotaDraft(
+            id: "other",
+            label: "Other Models",
+            scope: nil,
+            window: nil,
+            amount: UsageAmount(used: 20, limit: 20, remaining: 0, usedFraction: 1, remainingFraction: 0, unit: .usd),
+            status: .available,
+            resetsAt: nil
+        )
+        let quotas = builtQuotas(from: [
+            quota(id: "near", remainingPercent: 3),
+            dollars,
+            quota(id: "unknown", remainingPercent: nil),
+            quota(id: "almost-half", remainingPercent: 49.6),
+            quota(id: "gone", status: .exhausted, remainingPercent: nil)
+        ])
+
+        XCTAssertEqual(quotas.map(UsageFormatting.percentLeft), ["3%", "0%", nil, "50%", "0%"])
+    }
+
+    func testAccountTagJoinsTheProviderLetterAndTheAccountNumber() {
+        XCTAssertEqual(UsageFormatting.accountTag(provider: "anthropic", number: 1), "C1")
+        XCTAssertEqual(UsageFormatting.accountTag(provider: "cursor", number: 1), "U1")
+        XCTAssertEqual(UsageFormatting.accountTag(provider: "openai-codex", number: 3), "O3")
+        XCTAssertEqual(UsageFormatting.accountTag(provider: "xai-oauth", number: 12), "G12")
+        XCTAssertEqual(UsageFormatting.accountTag(provider: "mistral", number: 2), "M2")
     }
 
     private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
@@ -949,6 +1215,10 @@ final class UsageDomainTests: XCTestCase {
             case .missing(let key): "missing:\(key.account.accountID)"
             }
         }
+    }
+
+    private func builtQuotas(from drafts: [UsageQuotaDraft]) -> [UsageQuota] {
+        UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(accountID: "acct-a", quotas: drafts)]).reports[0].quotas
     }
 }
 
@@ -1431,5 +1701,231 @@ final class QuotaFlowerTests: XCTestCase {
         }
         let cell = Double(step * step)
         return (Double(total) * cell, inside.map { Double($0) * cell })
+    }
+}
+
+final class StatusGroupsTests: XCTestCase {
+    func testAnExhaustedRowReadsItsQuotaItsStatusAndItsReset() {
+        let overview = statusOverview([
+            report("anthropic", accountID: "claude-a", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0, resetsInMinutes: 561)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.exhausted.map { $0.accessibilityLabel(accountLabel: "Account 1", isStale: false, now: timestamp) },
+            ["Claude Account 1, 7 Day exhausted, resets in 9h 21m"]
+        )
+    }
+
+    func testANearLimitRowAddsTheShareLeftBeforeTheReset() {
+        let overview = statusOverview([
+            report("openai-codex", accountID: "codex-a", quotas: [
+                quota("7 days", windowLabel: "7 days", status: .nearLimit, remainingPercent: 3, resetsInMinutes: 6_605)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.nearLimit.map { $0.accessibilityLabel(accountLabel: "Account 1", isStale: false, now: timestamp) },
+            ["Codex Account 1, 7 days near limit, 3% left, resets in 4d 14h"]
+        )
+    }
+
+    func testANearLimitRowWithoutAKnownShareSaysSo() {
+        let overview = statusOverview([
+            report("openai-codex", accountID: "codex-a", quotas: [
+                quota("7 days", windowLabel: "7 days", status: .nearLimit, remainingPercent: nil, resetsInMinutes: 6_605)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.nearLimit.map { $0.accessibilityLabel(accountLabel: "Account 1", isStale: false, now: timestamp) },
+            ["Codex Account 1, 7 days near limit, remaining unknown, resets in 4d 14h"]
+        )
+    }
+
+    func testAnOKRowNamesItsLeadQuotaAndTheShareLeft() {
+        let overview = statusOverview([
+            report("anthropic", accountID: "claude-a", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0, resetsInMinutes: 561)
+            ]),
+            report("anthropic", accountID: "claude-b", quotas: [
+                quota("Claude 5 Hour", windowLabel: "5 Hour", durationMilliseconds: 18_000_000, remainingPercent: 100),
+                quota("Claude 7 Day", windowLabel: "7 Day", remainingPercent: 22, resetsInMinutes: 7_221)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.ok.map { $0.accessibilityLabel(accountLabel: "Account 2", isStale: false) },
+            ["Claude Account 2, OK, 7 Day, 22% left"]
+        )
+    }
+
+    func testAGrokRowShowsOnlyTheWindowLengthAndSpeaksTheQuotaNameWhole() {
+        let overview = statusOverview([
+            report("xai-oauth", accountID: "grok-a", quotas: [
+                quota("Grok Build (Weekly)", windowLabel: "Weekly", remainingPercent: 40)
+            ])
+        ])
+
+        XCTAssertEqual(overview.ok.map { UsageFormatting.shortLabel(for: $0.lead.quota) }, ["7d"])
+        XCTAssertEqual(
+            overview.ok.map { $0.accessibilityLabel(accountLabel: "Account 1", isStale: false) },
+            ["Grok Account 1, OK, Grok Build (Weekly), 40% left"]
+        )
+    }
+
+    func testAMergedRowJoinsTheNamesOfItsQuotasAndKeepsAProductNameWhole() {
+        let overview = statusOverview([
+            report("cursor", accountID: "cursor-a", quotas: [
+                quota("Cursor Models", windowLabel: "Monthly", durationMilliseconds: nil, status: .exhausted, remainingPercent: nil, resetsInMinutes: 5_242),
+                quota("Other Models", windowLabel: "Monthly", durationMilliseconds: nil, status: .exhausted, remainingPercent: 0, resetsInMinutes: 5_242)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.exhausted.map { $0.accessibilityLabel(accountLabel: "Account 1", isStale: false, now: timestamp) },
+            ["Cursor Account 1, Cursor Models and Other Models exhausted, resets in 3d 15h"]
+        )
+    }
+
+    func testAStaleRowEndsWithStale() {
+        let overview = statusOverview([
+            report("anthropic", accountID: "claude-a", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0, resetsInMinutes: 561)
+            ]),
+            report("anthropic", accountID: "claude-b", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", remainingPercent: 22)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.exhausted.map { $0.accessibilityLabel(accountLabel: "Account 1", isStale: true, now: timestamp) },
+            ["Claude Account 1, 7 Day exhausted, resets in 9h 21m, stale"]
+        )
+        XCTAssertEqual(
+            overview.ok.map { $0.accessibilityLabel(accountLabel: "Account 2", isStale: true) },
+            ["Claude Account 2, OK, 7 Day, 22% left, stale"]
+        )
+    }
+
+    func testARevealedIdentifierTakesThePlaceOfTheAccountAlias() {
+        let overview = statusOverview([
+            report("anthropic", accountID: "claude-a", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0, resetsInMinutes: 561)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.exhausted.map { $0.accessibilityLabel(accountLabel: "person@example.invalid", isStale: false, now: timestamp) },
+            ["Claude person@example.invalid, 7 Day exhausted, resets in 9h 21m"]
+        )
+    }
+
+    func testAResetThatPassedOrIsUnknownReadsAsSuch() {
+        let overview = statusOverview([
+            report("anthropic", accountID: "claude-a", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0, resetsInMinutes: -5)
+            ]),
+            report("anthropic", accountID: "claude-b", quotas: [
+                quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0, resetsInMinutes: nil)
+            ])
+        ])
+
+        XCTAssertEqual(
+            overview.exhausted.map { $0.accessibilityLabel(accountLabel: "Account", isStale: false, now: timestamp) },
+            ["Claude Account, 7 Day exhausted, reset passed · recheck", "Claude Account, 7 Day exhausted, reset unknown"]
+        )
+    }
+
+    func testTheResetFigureAndCaptionFollowTheCountdown() {
+        XCTAssertEqual(ResetCountdown.remaining("9h 21m").figure, "9h 21m")
+        XCTAssertEqual(ResetCountdown.passed.figure, "Recheck")
+        XCTAssertEqual(ResetCountdown.unknown.figure, "—")
+        XCTAssertEqual(ResetCountdown.remaining("4d 14h").caption, "resets 4d 14h")
+        XCTAssertEqual(ResetCountdown.passed.caption, "reset passed")
+        XCTAssertEqual(ResetCountdown.unknown.caption, "reset unknown")
+    }
+
+    func testAGroupHeaderReadsItsTitleAndItsLineCount() {
+        XCTAssertEqual(AccountStatus.exhausted.headerLabel(count: 2), "Exhausted, 2")
+        XCTAssertEqual(AccountStatus.nearLimit.headerLabel(count: 1), "Near limit, 1")
+        XCTAssertEqual(AccountStatus.ok.headerLabel(count: 6), "OK, 6")
+    }
+
+    // The container colors are the opaque panel colors the prototype measured behind each group, over a black and a gray backdrop.
+    @MainActor
+    func testEachInkReadsAtFourPointFiveToOneOnItsGroupInBothAppearances() throws {
+        let containers: [(status: AccountStatus, dark: [Double], light: [Double])] = [
+            (.exhausted, [61, 44, 43], [224, 206, 204]),
+            (.nearLimit, [62, 52, 42], [225, 214, 204]),
+            (.ok, [48, 48, 48], [214, 214, 214])
+        ]
+
+        for container in containers {
+            let ink = StatusInk.nsColor(for: container.status)
+            XCTAssertGreaterThanOrEqual(try contrast(of: ink, in: .darkAqua, against: container.dark), 4.5, "\(container.status) in the dark appearance")
+            XCTAssertGreaterThanOrEqual(try contrast(of: ink, in: .aqua, against: container.light), 4.5, "\(container.status) in the light appearance")
+        }
+    }
+
+    private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
+
+    private func statusOverview(_ reports: [UsageReportDraft]) -> StatusOverview {
+        UsageSnapshot(generatedAt: timestamp, reportDrafts: reports).statusOverview()
+    }
+
+    private func report(_ provider: String, accountID: String, quotas: [UsageQuotaDraft]) -> UsageReportDraft {
+        UsageReportDraft(
+            provider: provider,
+            sourceAccount: SourceAccountIdentity(accountID: accountID, organizationID: nil, projectID: nil),
+            privateDisplayLabel: nil,
+            fetchedAt: timestamp,
+            resetCredits: nil,
+            quotas: quotas
+        )
+    }
+
+    private func quota(
+        _ label: String,
+        windowLabel: String,
+        durationMilliseconds: Double? = 604_800_000,
+        status: UsageLimitStatus = .available,
+        remainingPercent: Double?,
+        resetsInMinutes: Double? = nil
+    ) -> UsageQuotaDraft {
+        UsageQuotaDraft(
+            id: label,
+            label: label,
+            scope: nil,
+            window: QuotaWindow(
+                identity: QuotaWindowIdentity(id: windowLabel),
+                label: windowLabel,
+                durationMilliseconds: durationMilliseconds,
+                resetLabel: nil
+            ),
+            amount: remainingPercent.map {
+                UsageAmount(used: 100 - $0, limit: 100, remaining: $0, usedFraction: (100 - $0) / 100, remainingFraction: $0 / 100, unit: .percent)
+            },
+            status: status,
+            resetsAt: resetsInMinutes.map { timestamp.addingTimeInterval($0 * 60) }
+        )
+    }
+
+    private func contrast(of ink: NSColor, in name: NSAppearance.Name, against background: [Double]) throws -> Double {
+        let appearance = try XCTUnwrap(NSAppearance(named: name))
+        var resolved: NSColor?
+        appearance.performAsCurrentDrawingAppearance { resolved = ink.usingColorSpace(.sRGB) }
+        let color = try XCTUnwrap(resolved)
+        let foreground = luminance(Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+        let backdrop = luminance(background[0] / 255, background[1] / 255, background[2] / 255)
+        return (max(foreground, backdrop) + 0.05) / (min(foreground, backdrop) + 0.05)
+    }
+
+    private func luminance(_ red: Double, _ green: Double, _ blue: Double) -> Double {
+        func linear(_ value: Double) -> Double {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     }
 }

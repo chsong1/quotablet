@@ -30,6 +30,8 @@ struct UsagePanel: View {
     @Bindable var store: UsageStore
     @State private var isChoosingCLI = false
     @State private var selectionError: String?
+    @State private var isOKExpanded = true
+    @State private var isAllQuotasExpanded = false
 
     var body: some View {
         panel(now: store.presentationDate)
@@ -65,12 +67,8 @@ struct UsagePanel: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    let attention = store.snapshot?.attentionItems() ?? []
-                    let summaryRepeatsAttention = store.pinnedQuotas.keys.isEmpty && !attention.isEmpty
-                    if !attention.isEmpty {
-                        attentionSection(attention, now: now)
-                    }
-                    if !summaryRepeatsAttention {
+                    statusGroups(now: now)
+                    if !store.pinnedQuotas.keys.isEmpty {
                         menuBarSelection(now: now)
                     }
                     collectionContent(now: now)
@@ -140,41 +138,30 @@ struct UsagePanel: View {
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .tracking(0.7)
                 Spacer()
-                Text(selectionKind(for: slots))
+                Text("PINNED · \(slots.count)")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
             }
-            if slots.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("No usage window is available for the menu bar summary.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Text(store.freshness(for: nil).displayLabel(now: now))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                switch layout {
-                case .list:
-                    ForEach(Array(zip(slots, badges).enumerated()), id: \.offset) { _, pair in
-                        MenuBarSlotRow(
-                            slot: pair.0,
-                            badge: pair.1,
-                            accountLabel: pair.0.selected.map { accountLabel(for: $0.report, number: $0.accountNumber) },
-                            freshness: store.freshness(for: pair.0.selected?.report),
-                            now: now,
-                            onRemove: { key in Task { await store.removePin(key) } }
-                        )
-                    }
-                case .flower:
-                    QuotaFlowerSummary(
-                        slots: slots,
-                        badges: badges,
-                        freshness: store.freshness(of: slots),
+            switch layout {
+            case .list:
+                ForEach(Array(zip(slots, badges).enumerated()), id: \.offset) { _, pair in
+                    MenuBarSlotRow(
+                        slot: pair.0,
+                        badge: pair.1,
+                        accountLabel: pair.0.selected.map { accountLabel(for: $0.report, number: $0.accountNumber) },
+                        freshness: store.freshness(for: pair.0.selected?.report),
                         now: now,
                         onRemove: { key in Task { await store.removePin(key) } }
                     )
                 }
+            case .flower:
+                QuotaFlowerSummary(
+                    slots: slots,
+                    badges: badges,
+                    freshness: store.freshness(of: slots),
+                    now: now,
+                    onRemove: { key in Task { await store.removePin(key) } }
+                )
             }
         }
         .padding(.horizontal, 12)
@@ -183,44 +170,16 @@ struct UsagePanel: View {
         .accessibilityIdentifier("quotablet.menu-bar-selection")
     }
 
-    private func attentionSection(_ items: [AttentionItem], now: Date) -> some View {
-        // Every account that needs attention has a row, so none is hidden here, and the menu bar counts the same accounts for its numbers.
-        let badges = MenuBarBadge.badges(for: MenuBarContent(slots: items.map { MenuBarSlot.attention($0.selection) }), now: now)
-        // The rows share one badge column so their text lines up whatever tag or number each badge carries.
-        let badgeWidth = badges.map { MenuBarBadgeRenderer.image(for: [$0], height: 22).size.width }.max() ?? 0
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .accessibilityHidden(true)
-                Text("NEEDS ATTENTION · \(items.count)")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .tracking(0.7)
-                Spacer()
-            }
-            ForEach(Array(zip(items, badges).enumerated()), id: \.offset) { _, pair in
-                AttentionRow(
-                    item: pair.0,
-                    badge: pair.1,
-                    badgeWidth: badgeWidth,
-                    accountLabel: accountLabel(for: pair.0.selection.report, number: pair.0.selection.accountNumber),
-                    now: now
-                )
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .accessibilityIdentifier("quotablet.needs-attention")
-    }
-
-    private func selectionKind(for slots: [MenuBarSlot]) -> String {
-        switch slots.first {
-        case nil: "NONE"
-        case .defaulted?: "MOST USED"
-        case .attention?: "NEEDS ATTENTION · \(slots.count)"
-        case .pinned?, .missing?: "PINNED · \(slots.count)"
+    @ViewBuilder
+    private func statusGroups(now: Date) -> some View {
+        if let overview = store.snapshot?.statusOverview(), !overview.isEmpty {
+            StatusGroups(
+                overview: overview,
+                isOKExpanded: $isOKExpanded,
+                now: now,
+                accountLabel: { accountLabel(for: $0, number: $1) },
+                isStale: { store.freshness(for: $0).isStale(at: now) }
+            )
         }
     }
 
@@ -235,20 +194,7 @@ struct UsagePanel: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 245)
             } else {
-                let topAttention = Dictionary(uniqueKeysWithValues: snapshot.accountAttention().map { ($0.selection.report.id, $0) })
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(snapshot.reports) { report in
-                        AccountSection(
-                            report: report,
-                            accountLabel: accountLabel(for: report, number: snapshot.accountNumber(of: report)),
-                            now: now,
-                            freshness: store.freshness(for: report),
-                            pins: store.pinnedQuotas,
-                            attention: topAttention[report.id],
-                            onTogglePin: { key in Task { await store.togglePin(key) } }
-                        )
-                    }
-                }
+                allQuotas(snapshot, now: now)
             }
         } else if store.isRefreshing {
             EmptyState(
@@ -272,6 +218,34 @@ struct UsagePanel: View {
             )
             .frame(maxWidth: .infinity, minHeight: 245)
         }
+    }
+
+    private func allQuotas(_ snapshot: UsageSnapshot, now: Date) -> some View {
+        let quotaCount = snapshot.reports.reduce(0) { $0 + $1.quotas.count }
+        return VStack(alignment: .leading, spacing: 10) {
+            DisclosureToggle(isExpanded: $isAllQuotasExpanded, spokenLabel: "All quotas, \(quotaCount)") {
+                Text("All quotas · \(quotaCount)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            if isAllQuotasExpanded {
+                let topAttention = Dictionary(uniqueKeysWithValues: snapshot.accountAttention().map { ($0.selection.report.id, $0) })
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(snapshot.reports) { report in
+                        AccountSection(
+                            report: report,
+                            accountLabel: accountLabel(for: report, number: snapshot.accountNumber(of: report)),
+                            now: now,
+                            freshness: store.freshness(for: report),
+                            pins: store.pinnedQuotas,
+                            attention: topAttention[report.id],
+                            onTogglePin: { key in Task { await store.togglePin(key) } }
+                        )
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("quotablet.all-quotas")
     }
 
     private var footer: some View {
@@ -607,82 +581,6 @@ private struct MenuBarSlotRow: View {
             .buttonStyle(.borderless)
             .accessibilityLabel("Remove unavailable pinned quota")
         }
-    }
-}
-
-private struct AttentionRow: View {
-    let item: AttentionItem
-    let badge: MenuBarBadge
-    let badgeWidth: CGFloat
-    let accountLabel: String
-    let now: Date
-
-    var body: some View {
-        let quota = item.selection.quota
-        return HStack(alignment: .center, spacing: 10) {
-            Image(nsImage: MenuBarBadgeRenderer.image(for: [badge], height: 22))
-                .renderingMode(.template)
-                .frame(width: badgeWidth, alignment: .leading)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(ProviderRegistry.displayName(for: item.selection.report.provider))
-                        .font(.system(size: 13, weight: .semibold))
-                        .layoutPriority(1)
-                    Text(accountLabel)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .truncationMode(.middle)
-                }
-                .lineLimit(1)
-                HStack(spacing: 5) {
-                    Text(quota.label)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .foregroundStyle(.secondary)
-                    Text(item.urgency.label)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(item.urgency.color)
-                        .layoutPriority(1)
-                    if badge.isStale {
-                        Text("·")
-                            .foregroundStyle(.secondary)
-                        Text("Stale")
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.orange)
-                            .layoutPriority(1)
-                    }
-                }
-                .font(.system(size: 11))
-                .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(UsageFormatting.remainingText(quota.amount))
-                    .font(.system(size: 16, weight: .semibold, design: .rounded).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Text(resetDescription)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rowAccessibilityLabel)
-    }
-
-    private var resetDescription: String {
-        let quota = item.selection.quota
-        return UsageFormatting.resetDescription(for: quota.resetsAt, resetLabel: quota.window?.resetLabel, now: now)
-    }
-
-    private var rowAccessibilityLabel: String {
-        let quota = item.selection.quota
-        let provider = ProviderRegistry.displayName(for: item.selection.report.provider)
-        let remaining = UsageFormatting.remainingText(quota.amount)
-        let stale = badge.isStale ? ", stale" : ""
-        return "\(provider), \(accountLabel), \(quota.label), \(item.urgency.label.lowercased()), \(remaining), \(resetDescription)\(stale)"
     }
 }
 
