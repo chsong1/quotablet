@@ -297,6 +297,10 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
     var windowLengths: Set<QuotaWindow.LengthKey> {
         Set(quotas.compactMap { $0.window?.lengthKey })
     }
+
+    var accountStatus: AccountStatus {
+        AccountStatus(topUrgency: quotas.compactMap(\.urgency).min())
+    }
 }
 
 struct SelectedQuota: Equatable, Sendable {
@@ -321,6 +325,50 @@ enum QuotaUrgency: Comparable, Sendable {
 struct AttentionItem: Equatable, Sendable {
     let selection: SelectedQuota
     let urgency: QuotaUrgency
+}
+
+// The group a row sits in. An account takes the status of its most urgent quota, and one with nothing to flag is ok.
+enum AccountStatus: Comparable, Sendable {
+    case exhausted
+    case nearLimit
+    case ok
+
+    init(topUrgency: QuotaUrgency?) {
+        switch topUrgency {
+        case .exhausted?: self = .exhausted
+        case .nearLimit?: self = .nearLimit
+        case nil: self = .ok
+        }
+    }
+}
+
+// One row of the Exhausted or Near limit group. Its quotas belong to one account, share an urgency, and reset in the same minute.
+struct AttentionLine: Equatable, Sendable {
+    let report: UsageReport
+    let accountNumber: Int
+    let urgency: QuotaUrgency
+    // Never empty and in rank order, so the first one stands for the line.
+    let quotas: [SelectedQuota]
+    let resetsAt: Date?
+
+    var lead: SelectedQuota { quotas[0] }
+}
+
+// One row of the OK group: an account with no quota that needs attention, led by its quota with the least left.
+struct HealthyLine: Equatable, Sendable {
+    let report: UsageReport
+    let accountNumber: Int
+    let lead: SelectedQuota
+}
+
+struct StatusOverview: Equatable, Sendable {
+    // Groups hold lines in display order, and a group's count is its line count.
+    let exhausted: [AttentionLine]
+    let nearLimit: [AttentionLine]
+    // Most used first.
+    let ok: [HealthyLine]
+
+    var isEmpty: Bool { exhausted.isEmpty && nearLimit.isEmpty && ok.isEmpty }
 }
 
 struct MenuBarPins: Codable, Equatable, Sendable {
@@ -549,6 +597,33 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         return attentionItems().filter { seen.insert($0.selection.report.id).inserted }
     }
 
+    func statusOverview() -> StatusOverview {
+        // attentionItems() is in rank order, so a line ranks by the quota that opened it, and each later quota joins the first line it runs out with.
+        var drafts: [(urgency: QuotaUrgency, quotas: [SelectedQuota])] = []
+        for item in attentionItems() {
+            let joined = drafts.firstIndex { $0.urgency == item.urgency && Self.runOutTogether($0.quotas[0], item.selection) }
+            if let joined {
+                drafts[joined].quotas.append(item.selection)
+            } else {
+                drafts.append((item.urgency, [item.selection]))
+            }
+        }
+        let attention = drafts.map { draft in
+            AttentionLine(
+                report: draft.quotas[0].report,
+                accountNumber: draft.quotas[0].accountNumber,
+                urgency: draft.urgency,
+                quotas: draft.quotas,
+                resetsAt: draft.quotas[0].quota.resetsAt
+            )
+        }
+        return StatusOverview(
+            exhausted: attention.filter { $0.urgency == .exhausted },
+            nearLimit: attention.filter { $0.urgency == .nearLimit },
+            ok: reports.compactMap(healthyLine(for:)).sorted { Self.isMoreUsedBefore($0.lead, $1.lead) }
+        )
+    }
+
     func menuBarContent(pins: MenuBarPins) -> MenuBarContent {
         if !pins.keys.isEmpty {
             let candidates = selections
@@ -566,7 +641,7 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
                 hiddenAttention: Array(attention.dropFirst(shown.count))
             )
         }
-        return MenuBarContent(slots: mostUsed().map { [MenuBarSlot.defaulted($0)] } ?? [])
+        return MenuBarContent(slots: Self.mostUsed(among: selections).map { [MenuBarSlot.defaulted($0)] } ?? [])
     }
 
     private var selections: [SelectedQuota] {
@@ -576,11 +651,26 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         }
     }
 
+    private func healthyLine(for report: UsageReport) -> HealthyLine? {
+        guard report.accountStatus == .ok else { return nil }
+        let number = accountNumber(of: report)
+        let quotas = report.quotas.map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
+        return Self.mostUsed(among: quotas).map { HealthyLine(report: report, accountNumber: number, lead: $0) }
+    }
+
     // With no known usage, fall back to the first quota in the stable order, the pick the menu bar made before it ranked.
-    private func mostUsed() -> SelectedQuota? {
-        let candidates = selections
+    private static func mostUsed(among candidates: [SelectedQuota]) -> SelectedQuota? {
         let measured = candidates.filter { $0.quota.remainingShare != nil }
-        return measured.isEmpty ? candidates.min(by: Self.isStablyBefore) : measured.min(by: Self.isMoreUsedBefore)
+        return measured.isEmpty ? candidates.min(by: isStablyBefore) : measured.min(by: isMoreUsedBefore)
+    }
+
+    // A quota with no reset time pairs only with another such quota, so a different reset is never hidden.
+    private static func runOutTogether(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
+        left.report.id == right.report.id && resetMinute(of: left.quota) == resetMinute(of: right.quota)
+    }
+
+    private static func resetMinute(of quota: UsageQuota) -> Double? {
+        quota.resetsAt.map { ($0.timeIntervalSince1970 / 60).rounded(.down) }
     }
 
     // The first key that differs decides: urgency, then the least remaining, then the earliest reset, then the stable order.
@@ -673,6 +763,13 @@ struct UsageFreshness: Equatable, Sendable {
     }
 }
 
+enum ResetCountdown: Equatable, Sendable {
+    // Bare text such as "9h 21m", for the caller to put in its own sentence.
+    case remaining(String)
+    case passed
+    case unknown
+}
+
 enum UsageFormatting {
     static func accountAlias(_ number: Int) -> String {
         "Account \(number)"
@@ -714,33 +811,65 @@ enum UsageFormatting {
         return "\(formatNumber(milliseconds / 1_000))s"
     }
 
-    static func resetDescription(for resetsAt: Date?, resetLabel: String?, now: Date) -> String {
-        guard let resetsAt else { return "Reset unknown" }
-        let interval = resetsAt.timeIntervalSince(now)
-        guard interval > 0 else { return "Reset passed · recheck" }
-        guard interval.isFinite, interval < Double(Int.max) else { return "Reset time unknown" }
+    private static let periodWords: Set<String> = ["daily", "weekly", "monthly", "hourly"]
 
-        let countdown: String
+    // The window length names a quota more briefly than its label does, so "Claude 7 Day (Fable)" becomes "7d Fable".
+    // A parenthetical that only restates the window, such as "Grok Build (Weekly)", repeats the length and is dropped.
+    static func shortLabel(for quota: UsageQuota) -> String {
+        guard
+            let window = quota.window,
+            let duration = compactDuration(milliseconds: window.durationMilliseconds)
+        else { return quota.label }
+        let label = quota.label
+        guard
+            let close = label.lastIndex(of: ")"),
+            let open = label[..<close].lastIndex(of: "(")
+        else { return duration }
+        let detail = label[label.index(after: open)..<close].trimmingCharacters(in: .whitespacesAndNewlines)
+        let addsNothing = detail.isEmpty
+            || periodWords.contains(detail.lowercased())
+            || detail.caseInsensitiveCompare(window.label.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+        return addsNothing ? duration : "\(duration) \(detail)"
+    }
+
+    static func percentLeft(_ quota: UsageQuota) -> String? {
+        quota.remainingShare.map { "\(Int(($0 * 100).rounded()))%" }
+    }
+
+    // Unlike the menu bar badge, the tag always carries the account number.
+    static func accountTag(provider: String, number: Int) -> String {
+        "\(ProviderRegistry.badgeLetter(for: provider))\(number)"
+    }
+
+    static func countdown(to resetsAt: Date?, now: Date) -> ResetCountdown {
+        guard let resetsAt else { return .unknown }
+        let interval = resetsAt.timeIntervalSince(now)
+        guard interval > 0 else { return .passed }
+        guard interval.isFinite, interval < Double(Int.max) else { return .unknown }
+
         let minutes = Int(interval / 60)
-        if minutes < 60 {
-            countdown = "\(max(1, minutes))m"
-        } else {
-            let hours = minutes / 60
-            if hours < 24 {
-                countdown = "\(hours)h \(minutes % 60)m"
+        if minutes < 60 { return .remaining("\(max(1, minutes))m") }
+        let hours = minutes / 60
+        if hours < 24 { return .remaining("\(hours)h \(minutes % 60)m") }
+        return .remaining("\(hours / 24)d \(hours % 24)h")
+    }
+
+    static func resetDescription(for resetsAt: Date?, resetLabel: String?, now: Date) -> String {
+        switch countdown(to: resetsAt, now: now) {
+        case .unknown:
+            return "Reset unknown"
+        case .passed:
+            return "Reset passed · recheck"
+        case .remaining(let remaining):
+            let label = resetLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let verb: String
+            if let label, !label.isEmpty {
+                verb = String(label.prefix(1)).uppercased() + String(label.dropFirst())
             } else {
-                let days = hours / 24
-                countdown = "\(days)d \(hours % 24)h"
+                verb = "Resets"
             }
+            return "\(verb) in \(remaining)"
         }
-        let label = resetLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let verb: String
-        if let label, !label.isEmpty {
-            verb = String(label.prefix(1)).uppercased() + String(label.dropFirst())
-        } else {
-            verb = "Resets"
-        }
-        return "\(verb) in \(countdown)"
     }
 
     // The reset text inside a line, such as "resets in 2h 5m" after a comma.
