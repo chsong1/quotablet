@@ -26,7 +26,7 @@ final class UsageStore {
     private(set) var lastError: OMPClientError?
     private(set) var persistenceWarning = false
     private(set) var executablePath: String?
-    private(set) var pinnedQuotas = MenuBarPins()
+    private(set) var logos = ProviderLogoCatalog.empty
     private(set) var revealsIdentifiers = false
     private(set) var presentationDate = Date()
 
@@ -39,14 +39,19 @@ final class UsageStore {
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     @ObservationIgnored private var didStart = false
     @ObservationIgnored private var isShuttingDown = false
+    @ObservationIgnored private var logoLibrary: ProviderLogoLibrary
+    @ObservationIgnored private let presentationInterval: Duration
 
     init(
         persistence: AppPersistence = AppPersistence(),
         schedulerInterval: Duration = .seconds(UsagePolicy.refreshIntervalSeconds),
+        presentationInterval: Duration = .seconds(30),
         fetcher: (@Sendable (CLIConfiguration) async throws -> UsageSnapshot)? = nil
     ) {
         self.persistence = persistence
         self.schedulerInterval = schedulerInterval
+        self.presentationInterval = presentationInterval
+        logoLibrary = ProviderLogoLibrary(directoryURL: persistence.logosDirectoryURL)
         self.fetcher = fetcher ?? { configuration in
             try await OMPClient().fetch(configuration: configuration)
         }
@@ -59,61 +64,16 @@ final class UsageStore {
         }
     }
 
-    var menuBarContent: MenuBarContent {
-        guard let snapshot else { return MenuBarContent(slots: pinnedQuotas.keys.map(MenuBarSlot.missing)) }
-        return snapshot.menuBarContent(pins: pinnedQuotas)
-    }
-
     func menuBarAccessibilityLabel(now: Date) -> String {
-        let content = menuBarContent
-        let collectionFreshness = freshness(of: content.slots).displayLabel(now: now)
-        guard let first = content.slots.first else {
-            return "Quotablet. No quota is available for the menu bar. \(collectionFreshness)"
+        let age = freshness(fetchedAt: snapshot?.reports.compactMap(\.fetchedAt).min()).displayLabel(now: now)
+        guard let providers = snapshot?.providerUsage(now: now), !providers.isEmpty else {
+            return "Quotablet. No quota is available for the menu bar. \(age)"
         }
-        var descriptions = content.slots.map { Self.menuBarDescription(of: $0, now: now) }
-        let lead: String
-        switch first {
-        case .attention:
-            lead = "Needs attention: "
-            let hidden = content.hiddenAttentionCount
-            if hidden > 0 {
-                let noun = hidden == 1 ? "account" : "accounts"
-                descriptions.append("and \(hidden) more \(noun)")
-            }
-        case .defaulted:
-            lead = "Most used: "
-        case .pinned, .missing:
-            lead = ""
-        }
-        return "\(lead)\(descriptions.joined(separator: "; ")). \(collectionFreshness)"
-    }
-
-    // accessibilityDescription(of:) has no clock because the flower legend shares it, so the reset countdown joins here.
-    private static func menuBarDescription(of slot: MenuBarSlot, now: Date) -> String {
-        guard case .attention(let selection) = slot else { return accessibilityDescription(of: slot) }
-        let reset = UsageFormatting.resetPhrase(for: selection.quota.resetsAt, resetLabel: selection.quota.window?.resetLabel, now: now)
-        return "\(accessibilityDescription(of: slot)), \(reset)"
-    }
-
-    static func accessibilityDescription(of slot: MenuBarSlot) -> String {
-        switch slot {
-        case .pinned(let selection), .defaulted(let selection):
-            return slotDescription(of: selection)
-        case .attention(let selection):
-            guard let urgency = selection.quota.urgency else { return slotDescription(of: selection) }
-            return "\(slotDescription(of: selection)), \(urgency.label.lowercased())"
-        case .missing:
-            return "Pinned quota unavailable"
-        }
+        return "\(providers.map(\.spokenSummary).joined(separator: "; ")). \(age)"
     }
 
     func freshness(for report: UsageReport?) -> UsageFreshness {
         freshness(fetchedAt: report?.fetchedAt)
-    }
-
-    // The slots share one freshness: the oldest report among them sets it.
-    func freshness(of slots: [MenuBarSlot]) -> UsageFreshness {
-        freshness(fetchedAt: slots.compactMap { $0.selected?.report.fetchedAt }.min())
     }
 
     private func freshness(fetchedAt: Date?) -> UsageFreshness {
@@ -139,18 +99,20 @@ final class UsageStore {
         guard !isShuttingDown else { return }
 
         executablePath = Self.normalizedPath(stored.settings.executablePath)
-        pinnedQuotas = stored.settings.pinnedQuotas
+        reloadLogosIfChanged()
         snapshot = stored.snapshot
         snapshotOrigin = stored.snapshot == nil ? nil : .cached
+        let interval = presentationInterval
         presentationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(30))
+                    try await Task.sleep(for: interval)
                 } catch {
                     return
                 }
                 guard let self, !self.isShuttingDown else { return }
                 self.presentationDate = Date()
+                self.reloadLogosIfChanged()
             }
         }
 
@@ -193,18 +155,6 @@ final class UsageStore {
         case .reconfiguring, .stopped:
             return
         }
-    }
-
-    func togglePin(_ key: QuotaPinKey) async {
-        guard !isShuttingDown else { return }
-        pinnedQuotas = pinnedQuotas.toggling(key)
-        await persistSettings()
-    }
-
-    func removePin(_ key: QuotaPinKey) async {
-        guard !isShuttingDown else { return }
-        pinnedQuotas = pinnedQuotas.removing(key)
-        await persistSettings()
     }
 
     func setRevealsIdentifiers(_ reveals: Bool) {
@@ -308,17 +258,16 @@ final class UsageStore {
     }
 
     private func persistSettings() async {
-        let settings = PersistedSettings(executablePath: executablePath, pinnedQuotas: pinnedQuotas)
+        let settings = PersistedSettings(executablePath: executablePath)
         if !(await persistence.save(settings: settings)) {
             persistenceWarning = true
         }
     }
 
-    private static func slotDescription(of selection: SelectedQuota) -> String {
-        let provider = ProviderRegistry.displayName(for: selection.report.provider)
-        let account = UsageFormatting.accountAlias(selection.accountNumber)
-        let remaining = UsageFormatting.remainingText(selection.quota.amount)
-        return "\(provider) \(account), \(selection.quota.label), \(remaining)"
+    private func reloadLogosIfChanged() {
+        if logoLibrary.reloadIfChanged() {
+            logos = logoLibrary.catalog
+        }
     }
 
     private static func normalizedPath(_ path: String?) -> String? {

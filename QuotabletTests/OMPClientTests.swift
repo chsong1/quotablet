@@ -183,7 +183,6 @@ final class OMPClientTests: XCTestCase {
             organizationID: nil,
             projectID: nil
         ))
-        XCTAssertNotNil(scopeOnlyReport.quotas.first?.pinKey)
     }
 
     func testScopeDiscriminatorAliasesDoNotBecomeIdentity() throws {
@@ -214,10 +213,9 @@ final class OMPClientTests: XCTestCase {
         XCTAssertNil(scope.organizationID)
         XCTAssertNil(scope.projectID)
         XCTAssertNil(scope.accountID)
-        XCTAssertNil(quota.pinKey)
     }
 
-    func testConflictingScopeAccountIDsRemainUnpinnable() throws {
+    func testConflictingScopeAccountIDsGiveNoSourceAccount() throws {
         let payload = Data(
             """
             {
@@ -249,7 +247,6 @@ final class OMPClientTests: XCTestCase {
         let report = try XCTUnwrap(OMPClient.decode(payload).reports.first)
 
         XCTAssertNil(report.sourceAccount)
-        XCTAssertTrue(report.quotas.allSatisfy { $0.pinKey == nil })
     }
 
     func testMalformedRequiredEnvelopeAndFlatWindowAreRejected() {

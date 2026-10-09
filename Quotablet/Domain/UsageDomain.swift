@@ -117,7 +117,7 @@ struct UsageAmount: Codable, Equatable, Sendable {
     }
 }
 
-struct QuotaScope: Codable, Hashable, Sendable {
+struct QuotaScope: Codable, Equatable, Sendable {
     let provider: String
     let accountID: String?
     let organizationID: String?
@@ -128,16 +128,32 @@ struct QuotaScope: Codable, Hashable, Sendable {
     let shared: Bool?
 }
 
-struct QuotaWindowIdentity: Codable, Hashable, Sendable {
+struct QuotaWindowIdentity: Codable, Equatable, Sendable {
     let id: String
 }
 
-struct QuotaWindow: Codable, Equatable, Sendable {
-    enum LengthKey: Hashable, Sendable {
-        case duration(Double)
-        case identityID(String)
+// A label such as "Weekly" names a period when a window gives no duration. A month counts as 30 days.
+enum PeriodWord: String, Sendable {
+    case hourly
+    case daily
+    case weekly
+    case monthly
+
+    init?(label: String) {
+        self.init(rawValue: label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
+    var milliseconds: Double {
+        switch self {
+        case .hourly: 3_600_000
+        case .daily: 86_400_000
+        case .weekly: 604_800_000
+        case .monthly: 2_592_000_000
+        }
+    }
+}
+
+struct QuotaWindow: Codable, Equatable, Sendable {
     let identity: QuotaWindowIdentity
     let label: String
     let durationMilliseconds: Double?
@@ -152,13 +168,10 @@ struct QuotaWindow: Codable, Equatable, Sendable {
         return "\(name) · \(duration)"
     }
 
-    // A window without a duration has no length to compare, so its identity stands in.
-    var lengthKey: LengthKey {
-        durationMilliseconds.map(LengthKey.duration) ?? .identityID(identity.id)
-    }
-
-    var tagText: String {
-        UsageFormatting.compactDuration(milliseconds: durationMilliseconds) ?? String(displayName.prefix(1)).uppercased()
+    // The duration OMP reports, else the period the label names. A window that gives neither is 0, which ranks it shortest.
+    var effectiveLengthMilliseconds: Double {
+        if let durationMilliseconds, durationMilliseconds.isFinite, durationMilliseconds > 0 { return durationMilliseconds }
+        return PeriodWord(label: label)?.milliseconds ?? 0
     }
 }
 
@@ -203,13 +216,6 @@ enum AccountIdentity: Codable, Equatable, Sendable {
     case transient(TransientAccountIdentity)
 }
 
-struct QuotaPinKey: Codable, Hashable, Sendable {
-    let account: StableAccountIdentity
-    let limitID: String
-    let scope: QuotaScope?
-    let window: QuotaWindowIdentity
-}
-
 struct UsageQuotaDraft: Equatable, Sendable {
     let id: String
     let label: String
@@ -242,7 +248,6 @@ struct QuotaRowID: Codable, Hashable, Sendable {
 
 struct UsageQuota: Codable, Equatable, Identifiable, Sendable {
     let id: QuotaRowID
-    let pinKey: QuotaPinKey?
     let limitID: String
     let label: String
     let scope: QuotaScope?
@@ -271,6 +276,23 @@ struct UsageQuota: Codable, Equatable, Identifiable, Sendable {
     var windowDisplayName: String {
         window?.displayName ?? "Window unknown"
     }
+
+    // The parenthetical a label ends in when it narrows the quota below its window, such as "Fable" in "Claude 7 Day (Fable)".
+    // One that only restates the window, such as "(Weekly)", narrows nothing.
+    var scopeDetail: String? {
+        guard
+            let close = label.lastIndex(of: ")"),
+            let open = label[..<close].lastIndex(of: "(")
+        else { return nil }
+        let detail = label[label.index(after: open)..<close].trimmingCharacters(in: .whitespacesAndNewlines)
+        let windowLabel = window?.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let restatesWindow = detail.isEmpty
+            || PeriodWord(label: detail) != nil
+            || windowLabel.map { detail.caseInsensitiveCompare($0) == .orderedSame } == true
+        return restatesWindow ? nil : detail
+    }
+
+    var isScoped: Bool { scopeDetail != nil }
 }
 
 struct UsageReport: Codable, Equatable, Identifiable, Sendable {
@@ -292,10 +314,6 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
         case .stable(let identity): ["0"] + identity.sortComponents
         case .transient(let identity): ["1", String(identity.reportOrdinal)]
         }
-    }
-
-    var windowLengths: Set<QuotaWindow.LengthKey> {
-        Set(quotas.compactMap { $0.window?.lengthKey })
     }
 
     var accountStatus: AccountStatus {
@@ -371,132 +389,25 @@ struct StatusOverview: Equatable, Sendable {
     var isEmpty: Bool { exhausted.isEmpty && nearLimit.isEmpty && ok.isEmpty }
 }
 
-struct MenuBarPins: Codable, Equatable, Sendable {
-    private(set) var keys: [QuotaPinKey]
-
-    init() {
-        keys = []
-    }
-
-    init(from decoder: Decoder) throws {
-        // A hand-edited file can repeat a key. Keep the first so the list stays duplicate-free.
-        var seen = Set<QuotaPinKey>()
-        keys = try decoder.singleValueContainer().decode([QuotaPinKey].self).filter { seen.insert($0).inserted }
-    }
-
-    private init(keys: [QuotaPinKey]) {
-        self.keys = keys
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(keys)
-    }
-
-    func contains(_ key: QuotaPinKey) -> Bool {
-        keys.contains(key)
-    }
-
-    func toggling(_ key: QuotaPinKey) -> MenuBarPins {
-        contains(key) ? removing(key) : MenuBarPins(keys: keys + [key])
-    }
-
-    func removing(_ key: QuotaPinKey) -> MenuBarPins {
-        MenuBarPins(keys: keys.filter { $0 != key })
-    }
-}
-
-enum MenuBarSlot: Equatable, Sendable {
-    case pinned(SelectedQuota)
-    case missing(QuotaPinKey)
-    case attention(SelectedQuota)
-    case defaulted(SelectedQuota)
-
-    var selected: SelectedQuota? {
-        switch self {
-        case .pinned(let selection), .attention(let selection), .defaulted(let selection): selection
-        case .missing: nil
-        }
-    }
-
-    var provider: String {
-        switch self {
-        case .pinned(let selection), .attention(let selection), .defaulted(let selection): selection.report.provider
-        case .missing(let key): key.account.provider
-        }
-    }
-}
-
-struct MenuBarContent: Equatable, Sendable {
-    static let attentionSlotLimit = 4
-
-    let slots: [MenuBarSlot]
-    // Accounts that need attention and did not fit in the slots, in rank order.
-    // Items rather than a count, because a shown badge's account number depends on whether a hidden account shares its provider.
-    let hiddenAttention: [AttentionItem]
-
-    var hiddenAttentionCount: Int { hiddenAttention.count }
-
-    init(slots: [MenuBarSlot], hiddenAttention: [AttentionItem] = []) {
-        self.slots = slots
-        self.hiddenAttention = hiddenAttention
-    }
-}
-
-enum BadgeGauge: Equatable, Sendable {
-    case used(Double)
-    case unknown
-    case missing
-
-    // Reads the progress the panel bar draws, so a badge and its bar never disagree.
-    init(amount: UsageAmount?) {
-        if let progress = amount?.progress {
-            self = .used(progress)
-        } else {
-            self = .unknown
-        }
-    }
-}
-
-struct MenuBarBadge: Equatable, Sendable {
-    let letter: String
-    let accountNumber: Int?
-    let gauge: BadgeGauge
+struct ProviderUsage: Equatable, Sendable {
+    let provider: String
+    // Reports of this provider, whether or not a figure could be read from them.
+    let accountCount: Int
+    // Each measured account's capacity quota, in report order.
+    let measured: [SelectedQuota]
+    // The used share of the combined limit. Nil when no account is measured.
+    let usedFraction: Double?
+    // Any measured account's report is stale.
     let isStale: Bool
-    let windowTag: String?
 
-    static func badges(for content: MenuBarContent, now: Date) -> [MenuBarBadge] {
-        let slots = content.slots
-        let selections = slots.compactMap(\.selected)
-        // The number only tells accounts apart, so a provider's slots show one only when they span two or more accounts.
-        // Hidden attention accounts count too, so a shown badge keeps its number when its sibling account does not fit in the menu bar.
-        let accountsByProvider = Dictionary(grouping: selections + content.hiddenAttention.map(\.selection), by: { $0.report.provider })
-            .mapValues { Set($0.map(\.accountNumber)) }
-        // The tag only tells window lengths apart, so a pinned slot shows one only when its account's slots span two or more lengths.
-        // An attention slot stands for its whole account, so it counts every length the account's quotas span.
-        let lengthsByAccount = Dictionary(grouping: selections, by: { $0.report.id })
-            .mapValues { Set($0.compactMap(\.quota.window?.lengthKey)) }
-        return slots.map { slot -> MenuBarBadge in
-            let letter = ProviderRegistry.badgeLetter(for: slot.provider)
-            guard let selection = slot.selected else {
-                return MenuBarBadge(letter: letter, accountNumber: nil, gauge: .missing, isStale: false, windowTag: nil)
-            }
-            let freshness = UsageFreshness(origin: nil, fetchedAt: selection.report.fetchedAt, refreshStatus: .idle)
-            let spansAccounts = accountsByProvider[selection.report.provider, default: []].count > 1
-            let spansLengths: Bool
-            if case .attention = slot {
-                spansLengths = selection.report.windowLengths.count > 1
-            } else {
-                spansLengths = lengthsByAccount[selection.report.id, default: []].count > 1
-            }
-            return MenuBarBadge(
-                letter: letter,
-                accountNumber: spansAccounts ? selection.accountNumber : nil,
-                gauge: BadgeGauge(amount: selection.quota.amount),
-                isStale: freshness.isStale(at: now),
-                windowTag: spansLengths ? selection.quota.window?.tagText : nil
-            )
-        }
+    // For example "Claude 79% used across 5 accounts" or "Grok 1% used, 1 account".
+    // When only some accounts are measured, the count says how many the figure covers.
+    var spokenSummary: String {
+        let name = ProviderRegistry.displayName(for: provider)
+        let lead = usedFraction == nil ? "\(name) usage unknown" : "\(name) \(UsageFormatting.usedPercent(usedFraction)) used"
+        guard accountCount != 1 else { return "\(lead), 1 account" }
+        let isPartial = measured.count > 0 && measured.count < accountCount
+        return "\(lead) across \(isPartial ? "\(measured.count) of \(accountCount)" : "\(accountCount)") accounts"
     }
 }
 
@@ -521,29 +432,6 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         }
         let stableCounts = Dictionary(grouping: stableCandidates.compactMap { $0 }, by: { $0 }).mapValues(\.count)
 
-        var quotaKeys: [QuotaPinKey?] = []
-        for (reportOrdinal, draft) in reportDrafts.enumerated() {
-            guard let stableAccount = stableCandidates[reportOrdinal], stableCounts[stableAccount] == 1 else {
-                quotaKeys.append(contentsOf: draft.quotas.map { _ in nil })
-                continue
-            }
-            quotaKeys.append(contentsOf: draft.quotas.map { quota in
-                guard
-                    !quota.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    let window = quota.window,
-                    !window.identity.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                else { return nil }
-                return QuotaPinKey(
-                    account: stableAccount,
-                    limitID: quota.id,
-                    scope: quota.scope,
-                    window: window.identity
-                )
-            })
-        }
-        let keyCounts = Dictionary(grouping: quotaKeys.compactMap { $0 }, by: { $0 }).mapValues(\.count)
-
-        var keyIndex = 0
         self.reports = reportDrafts.enumerated().map { reportOrdinal, draft in
             let candidate = stableCandidates[reportOrdinal]
             let accountIdentity: AccountIdentity
@@ -553,12 +441,8 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
                 accountIdentity = .transient(TransientAccountIdentity(snapshotID: revision, reportOrdinal: reportOrdinal))
             }
             let quotas = draft.quotas.enumerated().map { quotaOrdinal, quotaDraft in
-                let candidateKey = quotaKeys[keyIndex]
-                keyIndex += 1
-                let pinKey = candidateKey.flatMap { keyCounts[$0] == 1 ? $0 : nil }
-                return UsageQuota(
+                UsageQuota(
                     id: QuotaRowID(snapshotID: revision, reportOrdinal: reportOrdinal, quotaOrdinal: quotaOrdinal),
-                    pinKey: pinKey,
                     limitID: quotaDraft.id,
                     label: quotaDraft.label,
                     scope: quotaDraft.scope,
@@ -624,26 +508,6 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         )
     }
 
-    func menuBarContent(pins: MenuBarPins) -> MenuBarContent {
-        if !pins.keys.isEmpty {
-            let candidates = selections
-            return MenuBarContent(slots: pins.keys.map { key -> MenuBarSlot in
-                let matches = candidates.filter { $0.quota.pinKey == key }
-                guard matches.count == 1, let match = matches.first else { return .missing(key) }
-                return .pinned(match)
-            })
-        }
-        let attention = accountAttention()
-        if !attention.isEmpty {
-            let shown = attention.prefix(MenuBarContent.attentionSlotLimit)
-            return MenuBarContent(
-                slots: shown.map { MenuBarSlot.attention($0.selection) },
-                hiddenAttention: Array(attention.dropFirst(shown.count))
-            )
-        }
-        return MenuBarContent(slots: Self.mostUsed(among: selections).map { [MenuBarSlot.defaulted($0)] } ?? [])
-    }
-
     private var selections: [SelectedQuota] {
         reports.flatMap { report -> [SelectedQuota] in
             let number = accountNumber(of: report)
@@ -658,7 +522,7 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         return Self.mostUsed(among: quotas).map { HealthyLine(report: report, accountNumber: number, lead: $0) }
     }
 
-    // With no known usage, fall back to the first quota in the stable order, the pick the menu bar made before it ranked.
+    // With no known usage, fall back to the first quota in the stable order.
     private static func mostUsed(among candidates: [SelectedQuota]) -> SelectedQuota? {
         let measured = candidates.filter { $0.quota.remainingShare != nil }
         return measured.isEmpty ? candidates.min(by: isStablyBefore) : measured.min(by: isMoreUsedBefore)
@@ -714,6 +578,66 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
             return left.quota.id.reportOrdinal < right.quota.id.reportOrdinal
         }
         return left.quota.id.quotaOrdinal < right.quota.id.quotaOrdinal
+    }
+}
+
+extension UsageSnapshot {
+    // One entry for each provider that has a report, in the registry's order.
+    func providerUsage(now: Date) -> [ProviderUsage] {
+        Dictionary(grouping: reports, by: \.provider)
+            .map { provider, accounts in
+                let measured = accounts.compactMap(capacityQuota(of:))
+                return ProviderUsage(
+                    provider: provider,
+                    accountCount: accounts.count,
+                    measured: measured,
+                    usedFraction: Self.combinedUsedFraction(of: measured.compactMap(\.quota.amount)),
+                    isStale: measured.contains { UsageFreshness(origin: nil, fetchedAt: $0.report.fetchedAt, refreshStatus: .idle).isStale(at: now) }
+                )
+            }
+            .sorted { ProviderRegistry.ranksBefore($0.provider, $1.provider) }
+    }
+
+    // The one quota that stands for an account's whole limit: the longest window that is not narrowed to a scope such as a model.
+    private func capacityQuota(of report: UsageReport) -> SelectedQuota? {
+        let number = accountNumber(of: report)
+        return report.quotas
+            .filter { $0.amount?.progress != nil && !$0.isScoped }
+            .map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
+            .min(by: Self.isBetterCapacityQuota)
+    }
+
+    // The longest window wins. Windows of one length go to the most used quota, then to the stable order.
+    private static func isBetterCapacityQuota(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
+        let leftLength = left.quota.window?.effectiveLengthMilliseconds ?? 0
+        let rightLength = right.quota.window?.effectiveLengthMilliseconds ?? 0
+        if leftLength != rightLength { return leftLength > rightLength }
+        let leftUsed = left.quota.amount?.progress ?? 0
+        let rightUsed = right.quota.amount?.progress ?? 0
+        if leftUsed != rightUsed { return leftUsed > rightUsed }
+        return isStablyBefore(left, right)
+    }
+
+    // Each account counts as one equal part of 100%. When every account reports a positive limit in one unit, the limits pool instead,
+    // so the figure is the used share of the capacity the accounts really have.
+    private static func combinedUsedFraction(of amounts: [UsageAmount]) -> Double? {
+        let measured = amounts.compactMap { amount in amount.progress.map { (limit: amount.limit, unit: amount.unit, share: $0) } }
+        guard let first = measured.first else { return nil }
+        let limits = measured.compactMap { entry in entry.limit.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } }
+        // A missing unit names nothing, so two of them need not match.
+        let poolsLimits = limits.count == measured.count
+            && first.unit != .percent
+            && first.unit != .missing
+            && measured.allSatisfy { $0.unit == first.unit }
+        let fraction: Double
+        if poolsLimits {
+            // The used amount comes from the clamped share, so a quota that reports only what remains still counts.
+            let used = zip(measured, limits).reduce(0) { $0 + $1.0.share * $1.1 }
+            fraction = used / limits.reduce(0, +)
+        } else {
+            fraction = measured.reduce(0) { $0 + $1.share } / Double(measured.count)
+        }
+        return min(max(fraction, 0), 1)
     }
 }
 
@@ -811,8 +735,6 @@ enum UsageFormatting {
         return "\(formatNumber(milliseconds / 1_000))s"
     }
 
-    private static let periodWords: Set<String> = ["daily", "weekly", "monthly", "hourly"]
-
     // The window length names a quota more briefly than its label does, so "Claude 7 Day (Fable)" becomes "7d Fable".
     // A parenthetical that only restates the window, such as "Grok Build (Weekly)", repeats the length and is dropped.
     static func shortLabel(for quota: UsageQuota) -> String {
@@ -820,23 +742,20 @@ enum UsageFormatting {
             let window = quota.window,
             let duration = compactDuration(milliseconds: window.durationMilliseconds)
         else { return quota.label }
-        let label = quota.label
-        guard
-            let close = label.lastIndex(of: ")"),
-            let open = label[..<close].lastIndex(of: "(")
-        else { return duration }
-        let detail = label[label.index(after: open)..<close].trimmingCharacters(in: .whitespacesAndNewlines)
-        let addsNothing = detail.isEmpty
-            || periodWords.contains(detail.lowercased())
-            || detail.caseInsensitiveCompare(window.label.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
-        return addsNothing ? duration : "\(duration) \(detail)"
+        return quota.scopeDetail.map { "\(duration) \($0)" } ?? duration
     }
 
     static func percentLeft(_ quota: UsageQuota) -> String? {
         quota.remainingShare.map { "\(Int(($0 * 100).rounded()))%" }
     }
 
-    // Unlike the menu bar badge, the tag always carries the account number.
+    // Whole digits and a percent sign. An en dash stands for a share that is unknown.
+    static func usedPercent(_ fraction: Double?) -> String {
+        guard let fraction, fraction.isFinite else { return "–" }
+        return "\(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+    }
+
+    // The tag always carries the account number, such as "C1" for Claude Account 1.
     static func accountTag(provider: String, number: Int) -> String {
         "\(ProviderRegistry.badgeLetter(for: provider))\(number)"
     }
@@ -897,15 +816,17 @@ enum UsageFormatting {
 
 enum ProviderRegistry {
     private struct Entry: Sendable {
+        let id: String
         let displayName: String
         let badgeLetter: String
     }
 
-    private static let entries: [String: Entry] = [
-        "anthropic": Entry(displayName: "Claude", badgeLetter: "C"),
-        "openai-codex": Entry(displayName: "Codex", badgeLetter: "O"),
-        "xai-oauth": Entry(displayName: "Grok", badgeLetter: "G"),
-        "cursor": Entry(displayName: "Cursor", badgeLetter: "U"),
+    // The menu bar lists providers in this order, so each keeps its place from one refresh to the next.
+    private static let entries = [
+        Entry(id: "anthropic", displayName: "Claude", badgeLetter: "C"),
+        Entry(id: "openai-codex", displayName: "Codex", badgeLetter: "O"),
+        Entry(id: "xai-oauth", displayName: "Grok", badgeLetter: "G"),
+        Entry(id: "cursor", displayName: "Cursor", badgeLetter: "U"),
     ]
 
     static func displayName(for providerID: String) -> String {
@@ -916,9 +837,21 @@ enum ProviderRegistry {
         entry(for: providerID).badgeLetter
     }
 
+    // Known providers come first in registry order, and unknown ones follow alphabetically.
+    static func ranksBefore(_ left: String, _ right: String) -> Bool {
+        let leftRank = rank(of: left)
+        let rightRank = rank(of: right)
+        if leftRank != rightRank { return leftRank < rightRank }
+        return left.localizedStandardCompare(right) == .orderedAscending
+    }
+
+    private static func rank(of providerID: String) -> Int {
+        entries.firstIndex { $0.id == providerID.lowercased() } ?? entries.count
+    }
+
     private static func entry(for providerID: String) -> Entry {
-        entries[providerID.lowercased()]
-            ?? Entry(displayName: providerID, badgeLetter: String(providerID.prefix(1)).uppercased())
+        entries.first { $0.id == providerID.lowercased() }
+            ?? Entry(id: providerID, displayName: providerID, badgeLetter: String(providerID.prefix(1)).uppercased())
     }
 }
 
