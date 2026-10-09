@@ -59,31 +59,49 @@ final class UsageStore {
         }
     }
 
-    var menuBarSlots: [MenuBarSlot] {
-        guard let snapshot else { return pinnedQuotas.keys.map(MenuBarSlot.missing) }
-        return snapshot.menuBarSlots(pins: pinnedQuotas)
-    }
-
-    func menuBarBadges(now: Date) -> [MenuBarBadge] {
-        MenuBarBadge.badges(for: menuBarSlots, now: now)
+    var menuBarContent: MenuBarContent {
+        guard let snapshot else { return MenuBarContent(slots: pinnedQuotas.keys.map(MenuBarSlot.missing)) }
+        return snapshot.menuBarContent(pins: pinnedQuotas)
     }
 
     func menuBarAccessibilityLabel(now: Date) -> String {
-        let slots = menuBarSlots
-        let collectionFreshness = freshness(of: slots).displayLabel(now: now)
-        guard !slots.isEmpty else {
+        let content = menuBarContent
+        let collectionFreshness = freshness(of: content.slots).displayLabel(now: now)
+        guard let first = content.slots.first else {
             return "Quotablet. No quota is available for the menu bar. \(collectionFreshness)"
         }
-        let descriptions = slots.map(Self.accessibilityDescription(of:))
-        return "\(descriptions.joined(separator: "; ")). \(collectionFreshness)"
+        var descriptions = content.slots.map { Self.menuBarDescription(of: $0, now: now) }
+        let lead: String
+        switch first {
+        case .attention:
+            lead = "Needs attention: "
+            let hidden = content.hiddenAttentionCount
+            if hidden > 0 {
+                let noun = hidden == 1 ? "account" : "accounts"
+                descriptions.append("and \(hidden) more \(noun)")
+            }
+        case .defaulted:
+            lead = "Most used: "
+        case .pinned, .missing:
+            lead = ""
+        }
+        return "\(lead)\(descriptions.joined(separator: "; ")). \(collectionFreshness)"
+    }
+
+    // accessibilityDescription(of:) has no clock because the flower legend shares it, so the reset countdown joins here.
+    private static func menuBarDescription(of slot: MenuBarSlot, now: Date) -> String {
+        guard case .attention(let selection) = slot else { return accessibilityDescription(of: slot) }
+        let reset = UsageFormatting.resetPhrase(for: selection.quota.resetsAt, resetLabel: selection.quota.window?.resetLabel, now: now)
+        return "\(accessibilityDescription(of: slot)), \(reset)"
     }
 
     static func accessibilityDescription(of slot: MenuBarSlot) -> String {
         switch slot {
-        case .pinned(let selection):
+        case .pinned(let selection), .defaulted(let selection):
             return slotDescription(of: selection)
-        case .defaulted(let selection):
-            return "Selected by default, \(slotDescription(of: selection))"
+        case .attention(let selection):
+            guard let urgency = selection.quota.urgency else { return slotDescription(of: selection) }
+            return "\(slotDescription(of: selection)), \(urgency.label.lowercased())"
         case .missing:
             return "Pinned quota unavailable"
         }

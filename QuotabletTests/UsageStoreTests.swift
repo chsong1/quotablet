@@ -35,7 +35,7 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshotOrigin, .live)
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.pinnedQuotas.keys, [pin])
-        XCTAssertEqual(store.menuBarSlots, [.missing(pin)])
+        XCTAssertEqual(store.menuBarContent, MenuBarContent(slots: [.missing(pin)]))
 
         await store.shutdown()
     }
@@ -183,20 +183,80 @@ final class UsageStoreTests: XCTestCase {
             try await fetcher.fetch(configuration)
         }
 
-        XCTAssertEqual(store.menuBarSlots, [])
+        XCTAssertEqual(store.menuBarContent, MenuBarContent(slots: []))
         await store.togglePin(keys[1])
-        XCTAssertEqual(store.menuBarSlots, [.missing(keys[1])])
+        XCTAssertEqual(store.menuBarContent, MenuBarContent(slots: [.missing(keys[1])]))
 
         await store.refresh()
         await store.togglePin(keys[0])
-        XCTAssertEqual(store.menuBarSlots.compactMap { $0.selected?.quota.pinKey }, [keys[1], keys[0]])
+        XCTAssertEqual(store.menuBarContent.slots.compactMap { $0.selected?.quota.pinKey }, [keys[1], keys[0]])
         let afterAdding = await persistence.load()
         XCTAssertEqual(afterAdding.settings.pinnedQuotas.keys, [keys[1], keys[0]])
 
         await store.removePin(keys[1])
-        XCTAssertEqual(store.menuBarSlots.compactMap { $0.selected?.quota.pinKey }, [keys[0]])
+        XCTAssertEqual(store.menuBarContent.slots.compactMap { $0.selected?.quota.pinKey }, [keys[0]])
         let afterRemoving = await persistence.load()
         XCTAssertEqual(afterRemoving.settings.pinnedQuotas.keys, [keys[0]])
+
+        await store.shutdown()
+    }
+
+    func testAccessibilityLabelNamesEachAttentionAccountAndCountsTheRest() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = await refreshedStore(attentionSnapshot(accountCount: 6), directory: directory)
+        let entries = [
+            "Claude Account 6, Claude 7 Day, 0% left, exhausted, resets in 1h 0m",
+            "Claude Account 5, Claude 7 Day, 0% left, exhausted, resets in 2h 0m",
+            "Claude Account 4, Claude 7 Day, 0% left, exhausted, resets in 3h 0m",
+            "Claude Account 3, Claude 7 Day, 0% left, exhausted, resets in 4h 0m",
+            "and 2 more accounts"
+        ]
+
+        XCTAssertEqual(
+            store.menuBarAccessibilityLabel(now: fetchedAt),
+            "Needs attention: \(entries.joined(separator: "; ")). Provider data under 1m old"
+        )
+        XCTAssertEqual(store.menuBarContent.hiddenAttentionCount, 2)
+
+        await store.shutdown()
+    }
+
+    func testAccessibilityLabelSaysOneMoreAccountInTheSingular() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = await refreshedStore(attentionSnapshot(accountCount: 5), directory: directory)
+        let entries = [
+            "Claude Account 5, Claude 7 Day, 0% left, exhausted, resets in 1h 0m",
+            "Claude Account 4, Claude 7 Day, 0% left, exhausted, resets in 2h 0m",
+            "Claude Account 3, Claude 7 Day, 0% left, exhausted, resets in 3h 0m",
+            "Claude Account 2, Claude 7 Day, 0% left, exhausted, resets in 4h 0m",
+            "and 1 more account"
+        ]
+
+        XCTAssertEqual(
+            store.menuBarAccessibilityLabel(now: fetchedAt),
+            "Needs attention: \(entries.joined(separator: "; ")). Provider data under 1m old"
+        )
+
+        await store.shutdown()
+    }
+
+    func testAccessibilityLabelLeadsWithMostUsedWithoutPinsAndStaysPlainForPinsAndAnEmptyBar() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshot = sampleSnapshot(accountIDs: ["acct-a", "acct-b"])
+        let second = try XCTUnwrap(snapshot.reports[1].quotas.first?.pinKey)
+        let fetcher = SequencedFetcher([.success(snapshot)])
+        let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+
+        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Quotablet. No quota is available for the menu bar. Waiting for OMP")
+        await store.refresh()
+        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Most used: Claude Account 1, Session, 80% left. Provider data under 1m old")
+        await store.togglePin(second)
+        XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Claude Account 2, Session, 80% left. Provider data under 1m old")
 
         await store.shutdown()
     }
@@ -247,6 +307,46 @@ final class UsageStoreTests: XCTestCase {
             resetCredits: 0,
             quotas: [quota]
         )
+    }
+
+    private var fetchedAt: Date { Date(timeIntervalSince1970: 1_800_000_000) }
+
+    private func refreshedStore(_ snapshot: UsageSnapshot, directory: URL) async -> UsageStore {
+        let fetcher = SequencedFetcher([.success(snapshot)])
+        let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+        await store.refresh()
+        return store
+    }
+
+    // Account N resets in (accountCount + 1 - N) hours, so the last account ranks first.
+    private func attentionSnapshot(accountCount: Int) -> UsageSnapshot {
+        let drafts = (1...accountCount).map { number -> UsageReportDraft in
+            let exhausted = UsageQuotaDraft(
+                id: "weekly",
+                label: "Claude 7 Day",
+                scope: nil,
+                window: QuotaWindow(
+                    identity: QuotaWindowIdentity(id: "7d"),
+                    label: "7 Day",
+                    durationMilliseconds: 604_800_000,
+                    resetLabel: nil
+                ),
+                amount: UsageAmount(used: 100, limit: 100, remaining: 0, usedFraction: 1, remainingFraction: 0, unit: .percent),
+                status: .exhausted,
+                resetsAt: fetchedAt.addingTimeInterval(Double(accountCount + 1 - number) * 3_600)
+            )
+            return UsageReportDraft(
+                provider: "anthropic",
+                sourceAccount: SourceAccountIdentity(accountID: "acct-\(number)", organizationID: nil, projectID: nil),
+                privateDisplayLabel: nil,
+                fetchedAt: fetchedAt,
+                resetCredits: nil,
+                quotas: [exhausted]
+            )
+        }
+        return UsageSnapshot(generatedAt: fetchedAt, reportDrafts: drafts)
     }
 }
 
