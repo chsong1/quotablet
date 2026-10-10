@@ -32,14 +32,17 @@ struct UsagePanel: View {
     @Bindable var store: UsageStore
     @State private var isChoosingCLI = false
     @State private var selectionError: String?
-    @State private var isDetailsExpanded = false
-    @State private var isOKExpanded = true
-    @State private var isAllQuotasExpanded = false
+    @State private var route = PanelRoute.flower
+    @Namespace private var heroNamespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         panel(now: store.presentationDate)
         .frame(width: 420, height: 600)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onChange(of: store.snapshot?.revision) { _, _ in
+            route = route.resolved(in: store.snapshot)
+        }
         .fileImporter(
             isPresented: $isChoosingCLI,
             allowedContentTypes: [.item],
@@ -68,16 +71,7 @@ struct UsagePanel: View {
             if let selectionError {
                 NoticeRow(text: selectionError, symbol: "info.circle", color: .secondary)
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    providerFlower(now: now)
-                    details(now: now)
-                    collectionContent(now: now)
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            content(now: now)
             Divider().opacity(0.65)
             footer
         }
@@ -127,37 +121,7 @@ struct UsagePanel: View {
     }
 
     @ViewBuilder
-    private func providerFlower(now: Date) -> some View {
-        if let providers = store.snapshot?.providerUsage(now: now), !providers.isEmpty {
-            ProviderFlowerCard(providers: providers, logos: store.logos)
-        }
-    }
-
-    @ViewBuilder
-    private func details(now: Date) -> some View {
-        if let overview = store.snapshot?.statusOverview(), !overview.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                DisclosureToggle(isExpanded: $isDetailsExpanded, spokenLabel: overview.detailsSpokenLabel) {
-                    Text(overview.detailsLabel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                if isDetailsExpanded {
-                    StatusGroups(
-                        overview: overview,
-                        isOKExpanded: $isOKExpanded,
-                        now: now,
-                        accountLabel: { accountLabel(for: $0, number: $1) },
-                        isStale: { store.freshness(for: $0).isStale(at: now) }
-                    )
-                }
-            }
-            .accessibilityIdentifier("quotablet.details")
-        }
-    }
-
-    @ViewBuilder
-    private func collectionContent(now: Date) -> some View {
+    private func content(now: Date) -> some View {
         if let snapshot = store.snapshot {
             if snapshot.reports.isEmpty {
                 EmptyState(
@@ -165,9 +129,9 @@ struct UsagePanel: View {
                     title: store.snapshotOrigin == .cached ? "No saved usage reports" : "No usage reports",
                     detail: "OMP returned a valid empty snapshot. A later refresh can add reports."
                 )
-                .frame(maxWidth: .infinity, minHeight: 245)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                allQuotas(snapshot, now: now)
+                pages(of: snapshot, now: now)
             }
         } else if store.isRefreshing {
             EmptyState(
@@ -175,48 +139,66 @@ struct UsagePanel: View {
                 title: "Connecting to OMP",
                 detail: "Usage appears here when OMP returns its current reports."
             )
-            .frame(maxWidth: .infinity, minHeight: 245)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if store.lastError != nil {
             EmptyState(
                 symbol: "terminal",
                 title: "Usage is unavailable",
                 detail: "Choose the OMP executable or retry after it is available."
             )
-            .frame(maxWidth: .infinity, minHeight: 245)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             EmptyState(
                 symbol: "chart.bar.xaxis",
                 title: "Waiting for usage",
                 detail: "Quotablet reads usage from your local OMP installation."
             )
-            .frame(maxWidth: .infinity, minHeight: 245)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private func allQuotas(_ snapshot: UsageSnapshot, now: Date) -> some View {
-        let quotaCount = snapshot.reports.reduce(0) { $0 + $1.quotas.count }
-        return VStack(alignment: .leading, spacing: 10) {
-            DisclosureToggle(isExpanded: $isAllQuotasExpanded, spokenLabel: "All quotas, \(quotaCount)") {
-                Text("All quotas · \(quotaCount)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
+    // The front page, with one provider's page over it while the route names that provider. The front page stays under the open page,
+    // so the petal that opened grows out of its place and shrinks back into it.
+    private func pages(of snapshot: UsageSnapshot, now: Date) -> some View {
+        let providers = snapshot.providerUsage(now: now)
+        let current = route.resolved(in: snapshot)
+        let namespace: Namespace.ID? = reduceMotion ? nil : heroNamespace
+        return ZStack {
+            if FlowerLayout.forItemCount(providers.count) == .flower {
+                ProviderFlower(providers: providers, logos: store.logos, route: current, namespace: namespace, open: open)
+            } else {
+                ProviderList(providers: providers, logos: store.logos, route: current, namespace: namespace, open: open)
             }
-            if isAllQuotasExpanded {
-                let topAttention = Dictionary(uniqueKeysWithValues: snapshot.accountAttention().map { ($0.selection.report.id, $0) })
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(snapshot.reports) { report in
-                        AccountSection(
-                            report: report,
-                            accountLabel: accountLabel(for: report, number: snapshot.accountNumber(of: report)),
-                            now: now,
-                            freshness: store.freshness(for: report),
-                            attention: topAttention[report.id]
-                        )
-                    }
-                }
+            if case .provider(let id) = current, let detail = snapshot.providerDetail(of: id, now: now) {
+                ProviderPage(
+                    detail: detail,
+                    color: QuotaPalette.color(at: providers.firstIndex { $0.provider == id } ?? 0),
+                    logos: store.logos,
+                    now: now,
+                    accountLabel: { accountLabel(for: $0.report, number: $0.number) },
+                    showsAccountLabels: store.revealsIdentifiers,
+                    namespace: namespace,
+                    back: close
+                )
+                .transition(.opacity)
+                .zIndex(1)
             }
         }
-        .accessibilityIdentifier("quotablet.all-quotas")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    // One short ease in both directions. Under Reduce Motion nothing is paired or scaled, so the same ease only cross-fades.
+    private var routeAnimation: Animation {
+        .easeInOut(duration: 0.35)
+    }
+
+    private func open(_ provider: String) {
+        withAnimation(routeAnimation) { route = .provider(provider) }
+    }
+
+    private func close() {
+        withAnimation(routeAnimation) { route = .flower }
     }
 
     private var footer: some View {
@@ -281,177 +263,6 @@ struct UsagePanel: View {
     }
 }
 
-
-private struct UsageQuotaRow: View {
-    let quota: UsageQuota
-    let provider: String
-    let accountLabel: String
-    let now: Date
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(quota.label)
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(2)
-                    HStack(spacing: 5) {
-                        Text(quota.windowDisplayName)
-                        if let tier = quota.scope?.tier, !tier.allSatisfy(\.isWhitespace) {
-                            Text("·")
-                            Text(tier)
-                        }
-                        if let status = quota.status.label {
-                            Text("·")
-                            Text(status)
-                        } else if quota.isKnownExhausted {
-                            Text("·")
-                            Text("No remaining")
-                        }
-                    }
-                    .font(.system(size: 10))
-                    .foregroundStyle(statusColor)
-                }
-                Spacer(minLength: 8)
-                Text(UsageFormatting.remainingText(quota.amount))
-                    .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .frame(minWidth: 74, alignment: .trailing)
-                    .accessibilityHidden(true)
-            }
-            if let progress = quota.amount?.progress {
-                HStack(spacing: 6) {
-                    Text(UsageFormatting.progressLabel(progress))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    ProgressView(value: progress)
-                        .progressViewStyle(.linear)
-                        .controlSize(.mini)
-                        .tint(statusColor)
-                        .accessibilityHidden(true)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(UsageFormatting.progressLabel(progress))
-            }
-            HStack(spacing: 8) {
-                Text(resetDescription)
-                if quota.scope?.shared == true && quota.isKnownExhausted {
-                    Text("Shared limit exhausted")
-                        .foregroundStyle(.orange)
-                }
-                Spacer(minLength: 0)
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(rowAccessibilityLabel)
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private var statusColor: Color {
-        if quota.isKnownExhausted { return .red }
-        switch quota.status {
-        case .nearLimit: return .orange
-        case .available, .missing, .unknown(_): return .secondary
-        case .exhausted: return .red
-        }
-    }
-
-    private var resetDescription: String {
-        UsageFormatting.resetDescription(
-            for: quota.resetsAt,
-            resetLabel: quota.window?.resetLabel,
-            now: now
-        )
-    }
-
-    private var rowAccessibilityLabel: String {
-        let remaining = UsageFormatting.remainingText(quota.amount)
-        let tier = quota.scope?.tier.map { ", tier \($0)" } ?? ""
-        let progress = quota.amount?.progress.map { ", \(UsageFormatting.progressLabel($0))" } ?? ""
-        let shared = quota.scope?.shared == true && quota.isKnownExhausted ? ", shared limit exhausted" : ""
-        return "\(ProviderRegistry.displayName(for: provider)), \(accountLabel), \(quota.label), \(quota.windowDisplayName), \(remaining), \(resetDescription)\(tier)\(progress)\(shared)"
-    }
-}
-
-private struct AccountSection: View {
-    let report: UsageReport
-    let accountLabel: String
-    let now: Date
-    let freshness: UsageFreshness
-    let attention: AttentionItem?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(ProviderRegistry.displayName(for: report.provider))
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                    Text(accountLabel)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 2)
-                    Text(providerAge)
-                        .font(.system(size: 10, weight: ageIsStale ? .semibold : .regular))
-                        .foregroundStyle(ageIsStale || freshness.refreshStatus == .failed ? Color.orange : Color.secondary)
-                        .lineLimit(1)
-                        .accessibilityLabel(providerAge)
-                }
-                if let attention {
-                    Text(attentionSummary(of: attention))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(attention.urgency.color)
-                }
-            }
-            if let resetCredits = report.resetCredits {
-                Text("Reset credits · \(resetCredits)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            if report.quotas.isEmpty {
-                Text("No quota windows in this report.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 5)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(report.quotas) { quota in
-                        UsageQuotaRow(
-                            quota: quota,
-                            provider: report.provider,
-                            accountLabel: accountLabel,
-                            now: now
-                        )
-                        if quota.id != report.quotas.last?.id {
-                            Divider().padding(.vertical, 9)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.top, 2)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var ageIsStale: Bool {
-        freshness.isStale(at: now)
-    }
-
-    private var providerAge: String {
-        freshness.displayLabel(now: now)
-    }
-
-    private func attentionSummary(of item: AttentionItem) -> String {
-        let quota = item.selection.quota
-        let reset = UsageFormatting.resetPhrase(for: quota.resetsAt, resetLabel: quota.window?.resetLabel, now: now)
-        return "\(quota.label) \(item.urgency.label.lowercased()) · \(reset)"
-    }
-}
-
 private struct NoticeRow: View {
     let text: String
     let symbol: String
@@ -495,15 +306,6 @@ private struct EmptyState: View {
                 .frame(maxWidth: 270)
         }
         .accessibilityElement(children: .combine)
-    }
-}
-
-private extension QuotaUrgency {
-    var color: Color {
-        switch self {
-        case .exhausted: .red
-        case .nearLimit: .orange
-        }
     }
 }
 

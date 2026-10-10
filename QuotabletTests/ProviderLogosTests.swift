@@ -500,8 +500,52 @@ final class ProviderMenuBarRendererTests: XCTestCase {
         XCTAssertEqual(stale.peakAlpha(columns: badgeColumns) / fresh.peakAlpha(columns: badgeColumns), 0.55, accuracy: 0.03)
     }
 
+    func testTheMenuBarDimsAProviderOnlyWhenEveryMeasuredAccountIsStale() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // The same calls the menu bar label makes: the snapshot's provider usage, drawn by the renderer.
+        func raster(secondsOld ages: [TimeInterval]) throws -> Raster {
+            let drafts = ages.enumerated().map { index, age in
+                UsageReportDraft(
+                    provider: "ibm",
+                    sourceAccount: SourceAccountIdentity(accountID: "ibm-\(index)", organizationID: nil, projectID: nil),
+                    privateDisplayLabel: nil,
+                    fetchedAt: now.addingTimeInterval(-age),
+                    resetCredits: nil,
+                    quotas: [
+                        UsageQuotaDraft(
+                            id: "weekly",
+                            label: "Weekly",
+                            scope: nil,
+                            window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7 Day", durationMilliseconds: 604_800_000, resetLabel: nil),
+                            amount: UsageAmount(used: 50, limit: 100, remaining: 50, usedFraction: 0.5, remainingFraction: 0.5, unit: .percent),
+                            status: .available,
+                            resetsAt: nil
+                        )
+                    ]
+                )
+            }
+            let providers = UsageSnapshot(generatedAt: now, reportDrafts: drafts).providerUsage(now: now)
+            return try render(ProviderMenuBarRenderer.image(for: providers, logos: .empty))
+        }
+
+        let fresh = try raster(secondsOld: [60, 60])
+        let someStale = try raster(secondsOld: [3_600, 60])
+        let allStale = try raster(secondsOld: [3_600, 3_600])
+        let text = 36..<fresh.width
+
+        XCTAssertEqual(someStale.pixels(columns: 0..<someStale.width), fresh.pixels(columns: 0..<fresh.width))
+        XCTAssertLessThan(allStale.peakAlpha(columns: text), fresh.peakAlpha(columns: text) - 0.2)
+    }
+
     private func usage(_ provider: String, _ used: Double?, isStale: Bool = false) -> ProviderUsage {
-        ProviderUsage(provider: provider, accountCount: 1, measured: [], usedFraction: used, isStale: isStale)
+        ProviderUsage(
+            provider: provider,
+            accountCount: 1,
+            measured: [],
+            usedFraction: used,
+            isStale: isStale,
+            attention: ProviderAttention(exhaustedAccounts: 0, nearLimitAccounts: 0)
+        )
     }
 
     // The letter I has a stem through the middle of the badge, where the tests look for the knocked-out letter.

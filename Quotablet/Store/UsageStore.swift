@@ -72,10 +72,6 @@ final class UsageStore {
         return "\(providers.spokenSummary). \(age)"
     }
 
-    func freshness(for report: UsageReport?) -> UsageFreshness {
-        freshness(fetchedAt: report?.fetchedAt)
-    }
-
     private func freshness(fetchedAt: Date?) -> UsageFreshness {
         let refreshStatus: UsageRefreshStatus
         if isRefreshing {

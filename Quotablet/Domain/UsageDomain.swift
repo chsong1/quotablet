@@ -25,19 +25,6 @@ enum UsageUnit: Codable, Equatable, Sendable {
         default: self = .unknown(sourceValue)
         }
     }
-
-    var suffix: String? {
-        switch self {
-        case .missing: nil
-        case .percent: "%"
-        case .usd: "USD"
-        case .tokens: "tokens"
-        case .requests: "requests"
-        case .minutes: "min"
-        case .bytes: "bytes"
-        case .unknown(let value): value
-        }
-    }
 }
 
 enum UsageLimitStatus: Codable, Equatable, Sendable {
@@ -57,16 +44,6 @@ enum UsageLimitStatus: Codable, Equatable, Sendable {
         case "near_limit", "warning", "low": self = .nearLimit
         case "exhausted", "unavailable", "limited": self = .exhausted
         default: self = .unknown(sourceValue)
-        }
-    }
-
-    var label: String? {
-        switch self {
-        case .missing: nil
-        case .available: "Available"
-        case .nearLimit: "Near limit"
-        case .exhausted: "Exhausted"
-        case .unknown(let value): value.replacingOccurrences(of: "_", with: " ")
         }
     }
 }
@@ -133,7 +110,7 @@ struct QuotaWindowIdentity: Codable, Equatable, Sendable {
 }
 
 // A label such as "Weekly" names a period when a window gives no duration. A month counts as 30 days.
-enum PeriodWord: String, Sendable {
+enum PeriodWord: String, CaseIterable, Sendable {
     case hourly
     case daily
     case weekly
@@ -158,15 +135,6 @@ struct QuotaWindow: Codable, Equatable, Sendable {
     let label: String
     let durationMilliseconds: Double?
     let resetLabel: String?
-
-    var displayName: String {
-        let sourceLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = sourceLabel.isEmpty ? identity.id : sourceLabel
-        guard !name.isEmpty else { return "Window unknown" }
-        guard let duration = UsageFormatting.compactDuration(milliseconds: durationMilliseconds) else { return name }
-        guard !name.localizedCaseInsensitiveContains(duration) else { return name }
-        return "\(name) · \(duration)"
-    }
 
     // The duration OMP reports, else the period the label names. A window that gives neither is 0, which ranks it shortest.
     var effectiveLengthMilliseconds: Double {
@@ -267,14 +235,10 @@ struct UsageQuota: Codable, Equatable, Identifiable, Sendable {
         return nil
     }
 
-    // An exhausted quota has nothing left whatever its amount says, so it counts as empty even when the amount is unknown.
-    var remainingShare: Double? {
-        if isKnownExhausted { return 0 }
-        return amount?.progress.map { 1 - $0 }
-    }
-
-    var windowDisplayName: String {
-        window?.displayName ?? "Window unknown"
+    // An exhausted quota is full whatever its amount says, so it counts as used up even when the amount is unknown.
+    var usedShare: Double? {
+        if isKnownExhausted { return 1 }
+        return amount?.progress
     }
 
     // The parenthetical a label ends in when it narrows the quota below its window, such as "Fable" in "Claude 7 Day (Fable)".
@@ -316,15 +280,22 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    var topUrgency: QuotaUrgency? {
+        quotas.compactMap(\.urgency).min()
+    }
+
     var accountStatus: AccountStatus {
-        AccountStatus(topUrgency: quotas.compactMap(\.urgency).min())
+        AccountStatus(topUrgency: topUrgency)
+    }
+
+    func isStale(at now: Date) -> Bool {
+        UsageFreshness(origin: nil, fetchedAt: fetchedAt, refreshStatus: .idle).isStale(at: now)
     }
 }
 
 struct SelectedQuota: Equatable, Sendable {
     let report: UsageReport
     let quota: UsageQuota
-    let accountNumber: Int
 }
 
 // Declaration order is rank order, so a lower case sorts first.
@@ -340,12 +311,7 @@ enum QuotaUrgency: Comparable, Sendable {
     }
 }
 
-struct AttentionItem: Equatable, Sendable {
-    let selection: SelectedQuota
-    let urgency: QuotaUrgency
-}
-
-// The group a row sits in. An account takes the status of its most urgent quota, and one with nothing to flag is ok.
+// The status of an account or a window. An account takes the status of its most urgent quota, and one with nothing to flag is ok.
 enum AccountStatus: Comparable, Sendable {
     case exhausted
     case nearLimit
@@ -360,33 +326,41 @@ enum AccountStatus: Comparable, Sendable {
     }
 }
 
-// One row of the Exhausted or Near limit group. Its quotas belong to one account, share an urgency, and reset in the same minute.
-struct AttentionLine: Equatable, Sendable {
-    let report: UsageReport
-    let accountNumber: Int
+struct AttentionBadge: Equatable, Sendable {
     let urgency: QuotaUrgency
-    // Never empty and in rank order, so the first one stands for the line.
-    let quotas: [SelectedQuota]
-    let resetsAt: Date?
-
-    var lead: SelectedQuota { quotas[0] }
+    let count: Int
 }
 
-// One row of the OK group: an account with no quota that needs attention, led by its quota with the least left.
-struct HealthyLine: Equatable, Sendable {
-    let report: UsageReport
-    let accountNumber: Int
-    let lead: SelectedQuota
+// How many of a provider's accounts need attention, by the urgency rules every quota already follows.
+struct ProviderAttention: Equatable, Sendable {
+    // Accounts with at least one exhausted quota.
+    let exhaustedAccounts: Int
+    // Accounts whose most urgent quota is near limit.
+    let nearLimitAccounts: Int
+
+    // Exhausted wins, because an account that ran out matters more than one that is close.
+    var badge: AttentionBadge? {
+        if exhaustedAccounts > 0 { return AttentionBadge(urgency: .exhausted, count: exhaustedAccounts) }
+        if nearLimitAccounts > 0 { return AttentionBadge(urgency: .nearLimit, count: nearLimitAccounts) }
+        return nil
+    }
+
+    // For example "1 exhausted" and "2 near limit". Unlike the badge, speech keeps both counts.
+    var spokenParts: [String] {
+        var parts: [String] = []
+        if exhaustedAccounts > 0 { parts.append("\(exhaustedAccounts) \(QuotaUrgency.exhausted.label.lowercased())") }
+        if nearLimitAccounts > 0 { parts.append("\(nearLimitAccounts) \(QuotaUrgency.nearLimit.label.lowercased())") }
+        return parts
+    }
 }
 
-struct StatusOverview: Equatable, Sendable {
-    // Groups hold lines in display order, and a group's count is its line count.
-    let exhausted: [AttentionLine]
-    let nearLimit: [AttentionLine]
-    // Most used first.
-    let ok: [HealthyLine]
-
-    var isEmpty: Bool { exhausted.isEmpty && nearLimit.isEmpty && ok.isEmpty }
+extension ProviderAttention {
+    init(accountUrgencies: [QuotaUrgency?]) {
+        self.init(
+            exhaustedAccounts: accountUrgencies.filter { $0 == .exhausted }.count,
+            nearLimitAccounts: accountUrgencies.filter { $0 == .nearLimit }.count
+        )
+    }
 }
 
 struct ProviderUsage: Equatable, Sendable {
@@ -397,8 +371,10 @@ struct ProviderUsage: Equatable, Sendable {
     let measured: [SelectedQuota]
     // The used share of the combined limit. Nil when no account is measured.
     let usedFraction: Double?
-    // Any measured account's report is stale.
+    // Every measured account's report is stale. One stale account among fresh ones leaves its provider fresh,
+    // and the provider's page marks that account.
     let isStale: Bool
+    let attention: ProviderAttention
 
     // For example "5 accounts" or "1 account". When only some accounts are measured, the count says how many the figure covers: "4 of 5 accounts".
     var accountsPhrase: String {
@@ -413,10 +389,15 @@ struct ProviderUsage: Equatable, Sendable {
         let lead = usedFraction == nil ? "\(name) usage unknown" : "\(name) \(UsageFormatting.usedPercent(usedFraction)) used"
         return accountCount == 1 ? "\(lead), \(accountsPhrase)" : "\(lead) across \(accountsPhrase)"
     }
+
+    // What a petal and a list row speak, such as "Claude 79% used across 5 accounts, 1 exhausted, 2 near limit, stale".
+    var petalAccessibilityLabel: String {
+        ([spokenSummary] + attention.spokenParts + (isStale ? ["stale"] : [])).joined(separator: ", ")
+    }
 }
 
 extension Array where Element == ProviderUsage {
-    // Every provider's sentence in one, for the menu bar item and the panel's chart.
+    // Every provider's sentence in one, for the menu bar item.
     var spokenSummary: String {
         map(\.spokenSummary).joined(separator: "; ")
     }
@@ -476,100 +457,6 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         }
     }
 
-    func accountNumber(of report: UsageReport) -> Int {
-        let sameProvider = reports.filter { $0.provider == report.provider }
-        return (sameProvider.firstIndex { $0.id == report.id } ?? 0) + 1
-    }
-
-    func attentionItems() -> [AttentionItem] {
-        selections
-            .compactMap { selection in selection.quota.urgency.map { AttentionItem(selection: selection, urgency: $0) } }
-            .sorted(by: Self.ranksBefore)
-    }
-
-    func accountAttention() -> [AttentionItem] {
-        var seen = Set<ReportRowID>()
-        return attentionItems().filter { seen.insert($0.selection.report.id).inserted }
-    }
-
-    func statusOverview() -> StatusOverview {
-        // attentionItems() is in rank order, so a line ranks by the quota that opened it, and each later quota joins the first line it runs out with.
-        var drafts: [(urgency: QuotaUrgency, quotas: [SelectedQuota])] = []
-        for item in attentionItems() {
-            let joined = drafts.firstIndex { $0.urgency == item.urgency && Self.runOutTogether($0.quotas[0], item.selection) }
-            if let joined {
-                drafts[joined].quotas.append(item.selection)
-            } else {
-                drafts.append((item.urgency, [item.selection]))
-            }
-        }
-        let attention = drafts.map { draft in
-            AttentionLine(
-                report: draft.quotas[0].report,
-                accountNumber: draft.quotas[0].accountNumber,
-                urgency: draft.urgency,
-                quotas: draft.quotas,
-                resetsAt: draft.quotas[0].quota.resetsAt
-            )
-        }
-        return StatusOverview(
-            exhausted: attention.filter { $0.urgency == .exhausted },
-            nearLimit: attention.filter { $0.urgency == .nearLimit },
-            ok: reports.compactMap(healthyLine(for:)).sorted { Self.isMoreUsedBefore($0.lead, $1.lead) }
-        )
-    }
-
-    private var selections: [SelectedQuota] {
-        reports.flatMap { report -> [SelectedQuota] in
-            let number = accountNumber(of: report)
-            return report.quotas.map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
-        }
-    }
-
-    private func healthyLine(for report: UsageReport) -> HealthyLine? {
-        guard report.accountStatus == .ok else { return nil }
-        let number = accountNumber(of: report)
-        let quotas = report.quotas.map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
-        return Self.mostUsed(among: quotas).map { HealthyLine(report: report, accountNumber: number, lead: $0) }
-    }
-
-    // With no known usage, fall back to the first quota in the stable order.
-    private static func mostUsed(among candidates: [SelectedQuota]) -> SelectedQuota? {
-        let measured = candidates.filter { $0.quota.remainingShare != nil }
-        return measured.isEmpty ? candidates.min(by: isStablyBefore) : measured.min(by: isMoreUsedBefore)
-    }
-
-    // A quota with no reset time pairs only with another such quota, so a different reset is never hidden.
-    private static func runOutTogether(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
-        left.report.id == right.report.id && resetMinute(of: left.quota) == resetMinute(of: right.quota)
-    }
-
-    private static func resetMinute(of quota: UsageQuota) -> Double? {
-        quota.resetsAt.map { ($0.timeIntervalSince1970 / 60).rounded(.down) }
-    }
-
-    // The first key that differs decides: urgency, then the least remaining, then the earliest reset, then the stable order.
-    private static func ranksBefore(_ left: AttentionItem, _ right: AttentionItem) -> Bool {
-        if left.urgency != right.urgency { return left.urgency < right.urgency }
-        return ascendingUnknownLast(left.selection.quota.remainingShare, right.selection.quota.remainingShare)
-            ?? resetsBeforeStableOrder(left.selection, right.selection)
-    }
-
-    private static func isMoreUsedBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
-        ascendingUnknownLast(left.quota.remainingShare, right.quota.remainingShare) ?? resetsBeforeStableOrder(left, right)
-    }
-
-    private static func resetsBeforeStableOrder(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
-        ascendingUnknownLast(left.quota.resetsAt, right.quota.resetsAt) ?? isStablyBefore(left, right)
-    }
-
-    // A tie is nil, so the caller falls through to its next key.
-    private static func ascendingUnknownLast<Value: Comparable>(_ left: Value?, _ right: Value?) -> Bool? {
-        guard let left else { return right == nil ? nil : false }
-        guard let right else { return true }
-        return left == right ? nil : left < right
-    }
-
     private static func isStablyBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
         if left.report.provider != right.report.provider {
             return left.report.provider.localizedStandardCompare(right.report.provider) == .orderedAscending
@@ -603,7 +490,8 @@ extension UsageSnapshot {
                     accountCount: accounts.count,
                     measured: measured,
                     usedFraction: Self.combinedUsedFraction(of: measured.compactMap(\.quota.amount)),
-                    isStale: measured.contains { UsageFreshness(origin: nil, fetchedAt: $0.report.fetchedAt, refreshStatus: .idle).isStale(at: now) }
+                    isStale: !measured.isEmpty && measured.allSatisfy { $0.report.isStale(at: now) },
+                    attention: ProviderAttention(accountUrgencies: accounts.map(\.topUrgency))
                 )
             }
             .sorted { ProviderRegistry.ranksBefore($0.provider, $1.provider) }
@@ -611,10 +499,9 @@ extension UsageSnapshot {
 
     // The one quota that stands for an account's whole limit: the longest window that is not narrowed to a scope such as a model.
     private func capacityQuota(of report: UsageReport) -> SelectedQuota? {
-        let number = accountNumber(of: report)
-        return report.quotas
+        report.quotas
             .filter { $0.amount?.progress != nil && !$0.isScoped }
-            .map { SelectedQuota(report: report, quota: $0, accountNumber: number) }
+            .map { SelectedQuota(report: report, quota: $0) }
             .min(by: Self.isBetterCapacityQuota)
     }
 
@@ -649,6 +536,173 @@ extension UsageSnapshot {
             fraction = measured.reduce(0) { $0 + $1.share } / Double(measured.count)
         }
         return min(max(fraction, 0), 1)
+    }
+}
+
+// Which page of the panel is showing. It is view state, so it is never saved.
+enum PanelRoute: Equatable, Sendable {
+    case flower
+    case provider(String)
+
+    // A refresh can drop the provider whose page is open. That page has nothing left to show, so the route returns to the flower.
+    func resolved(in snapshot: UsageSnapshot?) -> PanelRoute {
+        guard case .provider(let id) = self else { return self }
+        return snapshot?.reports.contains { $0.provider == id } == true ? self : .flower
+    }
+}
+
+// What a window is called on its provider's page.
+struct WindowName: Equatable, Sendable {
+    // Heads the window's column, such as "5h" or "7d Fable".
+    let short: String
+    // The same name with its window length in words, for a screen reader.
+    let spoken: String
+}
+
+// One quota of an account as its provider's page shows it.
+struct WindowEntry: Equatable, Sendable {
+    let name: WindowName
+    // Nil when the quota reports no usable figure. An exhausted quota is full whatever its amount says.
+    let usedFraction: Double?
+    let urgency: QuotaUrgency?
+    let resetsAt: Date?
+}
+
+// What a window's cell says. The rule lives here so the compact row and the roomy card cannot disagree.
+enum WindowReading: Equatable, Sendable {
+    // The used percent, or a dash when the figure is unknown, and the time until the window resets when it has a reset time.
+    case used(percent: String, resetsIn: String?)
+    // An exhausted window that has a reset time. It says when the window comes back, in place of its percent.
+    case exhausted(resetsIn: String)
+}
+
+extension WindowEntry {
+    func reading(now: Date) -> WindowReading {
+        let resetsIn: String?
+        switch UsageFormatting.countdown(to: resetsAt, now: now) {
+        case .remaining(let compact, _): resetsIn = compact
+        case .passed: resetsIn = "Recheck"
+        case .unknown: resetsIn = nil
+        }
+        if urgency == .exhausted, let resetsIn { return .exhausted(resetsIn: resetsIn) }
+        return .used(percent: usedFraction.map { UsageFormatting.usedPercent($0) } ?? "—", resetsIn: resetsIn)
+    }
+
+    // For example "7 day 91% used, resets in 3 days 23 hours".
+    func spokenSummary(now: Date) -> String {
+        var parts = ["\(name.spoken) \(usedFraction.map { "\(UsageFormatting.usedPercent($0)) used" } ?? "usage unknown")"]
+        switch UsageFormatting.countdown(to: resetsAt, now: now) {
+        case .remaining(_, let spoken): parts.append("resets in \(spoken)")
+        case .passed: parts.append("reset passed, recheck")
+        case .unknown: break
+        }
+        return parts.joined(separator: ", ")
+    }
+}
+
+// One account on its provider's page: its petal, its row, and every window it reports.
+struct AccountDetail: Equatable, Sendable {
+    let report: UsageReport
+    // Report order within the provider, counted from 1.
+    let number: Int
+    // The used share of the one quota the provider's figure counts for this account, so the account's petal and the provider's petal agree.
+    // Nil when the account is not measured.
+    let capacityFraction: Double?
+    let isStale: Bool
+    let windows: [WindowEntry]
+
+    var urgency: QuotaUrgency? { report.topUrgency }
+    var status: AccountStatus { report.accountStatus }
+
+    // The used share of the window closest to running out. Nil when no window has a figure.
+    var mostUsedFraction: Double? { windows.compactMap(\.usedFraction).max() }
+
+    // When the last exhausted window resets, because the account stays blocked until all of them clear.
+    // Nil when nothing is exhausted or one exhausted window has no reset time.
+    var clearsAt: Date? {
+        let exhausted = windows.filter { $0.urgency == .exhausted }
+        let resets = exhausted.compactMap(\.resetsAt)
+        guard !exhausted.isEmpty, resets.count == exhausted.count else { return nil }
+        return resets.max()
+    }
+
+    // An account with an exhausted quota leads, and the one that clears first comes first. Near-limit accounts follow, then the rest,
+    // each by most used. The account number breaks ties.
+    static func ranksBefore(_ left: AccountDetail, _ right: AccountDetail) -> Bool {
+        if left.status != right.status { return left.status < right.status }
+        if left.status == .exhausted, let order = ordered(left.clearsAt, right.clearsAt, ascending: true) { return order }
+        if let order = ordered(left.mostUsedFraction, right.mostUsedFraction, ascending: false) { return order }
+        return left.number < right.number
+    }
+
+    // A tie is nil, so the caller falls through to its next key. A missing value comes after every known one.
+    private static func ordered<Value: Comparable>(_ left: Value?, _ right: Value?, ascending: Bool) -> Bool? {
+        guard left != right else { return nil }
+        guard let left else { return false }
+        guard let right else { return true }
+        return ascending ? left < right : left > right
+    }
+
+    // For example "Account 2, near limit, 7 day 91% used, resets in 3 days 23 hours; 5 hour 0% used". Windows that need attention come first.
+    func accessibilityLabel(accountLabel: String, now: Date) -> String {
+        var parts = [accountLabel]
+        if let urgency { parts.append(urgency.label.lowercased()) }
+        if !windows.isEmpty {
+            let leading = windows.filter { $0.urgency == .exhausted } + windows.filter { $0.urgency == .nearLimit }
+            let rest = windows.filter { $0.urgency == nil }
+            parts.append((leading + rest).map { $0.spokenSummary(now: now) }.joined(separator: "; "))
+        }
+        if isStale { parts.append("stale") }
+        return parts.joined(separator: ", ")
+    }
+}
+
+// One provider's page: the provider's figures and each of its accounts.
+struct ProviderDetail: Equatable, Sendable {
+    let usage: ProviderUsage
+    // In account-number order, so an account's petal keeps its place from one refresh to the next.
+    let accounts: [AccountDetail]
+
+    // Most urgent first, which is the order of the rows.
+    var accountsByUrgency: [AccountDetail] { accounts.sorted(by: AccountDetail.ranksBefore) }
+
+    // Every window name that any account reports, in the order they first appear, so each row lines its windows up under one heading.
+    var windowColumns: [String] {
+        var names: [String] = []
+        for name in accounts.flatMap(\.windows).map(\.name.short) where !names.contains(name) {
+            names.append(name)
+        }
+        return names
+    }
+
+    var hasStaleAccount: Bool { accounts.contains(where: \.isStale) }
+}
+
+extension UsageSnapshot {
+    // One provider's accounts as its page shows them. Nil when no report names the provider.
+    func providerDetail(of provider: String, now: Date) -> ProviderDetail? {
+        guard let usage = providerUsage(now: now).first(where: { $0.provider == provider }) else { return nil }
+        let capacity = Dictionary(uniqueKeysWithValues: usage.measured.map { ($0.report.id, $0.quota) })
+        let accounts = reports
+            .filter { $0.provider == provider }
+            .enumerated()
+            .map { offset, report in
+                AccountDetail(
+                    report: report,
+                    number: offset + 1,
+                    capacityFraction: capacity[report.id]?.amount?.progress,
+                    isStale: report.isStale(at: now),
+                    windows: Self.windowEntries(of: report)
+                )
+            }
+        return ProviderDetail(usage: usage, accounts: accounts)
+    }
+
+    private static func windowEntries(of report: UsageReport) -> [WindowEntry] {
+        let names = UsageFormatting.windowNames(for: report.quotas, provider: report.provider)
+        return zip(report.quotas, names).map { quota, name in
+            WindowEntry(name: name, usedFraction: quota.usedShare, urgency: quota.urgency, resetsAt: quota.resetsAt)
+        }
     }
 }
 
@@ -699,8 +753,8 @@ struct UsageFreshness: Equatable, Sendable {
 }
 
 enum ResetCountdown: Equatable, Sendable {
-    // Bare text such as "9h 21m", for the caller to put in its own sentence.
-    case remaining(String)
+    // The time left in two forms, for the caller to put in its own sentence: printed such as "9h 21m", and spoken such as "9 hours 21 minutes".
+    case remaining(compact: String, spoken: String)
     case passed
     case unknown
 }
@@ -710,65 +764,114 @@ enum UsageFormatting {
         "Account \(number)"
     }
 
-    static func remainingText(_ amount: UsageAmount?) -> String {
-        guard let amount, let value = amount.displayedRemaining, value.isFinite else { return "Remaining unknown" }
-        let number = formatNumber(value)
-        switch amount.unit {
-        case .usd:
-            return "\(value.formatted(.currency(code: "USD").precision(.fractionLength(2)))) left"
-        case .percent:
-            return "\(number)% left"
-        default:
-            guard let suffix = amount.unit.suffix else { return "\(number) left" }
-            return "\(number) \(suffix) left"
+    private enum DurationUnit {
+        case day
+        case hour
+        case minute
+        case second
+
+        var letter: String {
+            switch self {
+            case .day: "d"
+            case .hour: "h"
+            case .minute: "m"
+            case .second: "s"
+            }
+        }
+
+        var word: String {
+            switch self {
+            case .day: "day"
+            case .hour: "hour"
+            case .minute: "minute"
+            case .second: "second"
+            }
         }
     }
 
-    static func progressLabel(_ fraction: Double) -> String {
-        "Used \(progressValue(fraction))"
-    }
-
-    static func progressValue(_ fraction: Double) -> String {
-        guard fraction.isFinite else { return "unknown" }
-        return "\(formatNumber(min(max(fraction, 0), 1) * 100))%"
-    }
-
-    static func compactDuration(milliseconds: Double?) -> String? {
+    // A window's length in the largest unit that holds it. Only whole days count as days, so 36 hours stays 36 hours.
+    private static func durationParts(milliseconds: Double?) -> (value: String, unit: DurationUnit)? {
         guard let milliseconds, milliseconds.isFinite, milliseconds > 0 else { return nil }
         let hours = milliseconds / 3_600_000
         if hours >= 24 {
             let days = hours / 24
-            if abs(days.rounded() - days) < 0.000_001 { return "\(formatNumber(days))d" }
+            if abs(days.rounded() - days) < 0.000_001 { return (formatNumber(days), .day) }
         }
-        if hours >= 1 { return "\(formatNumber(hours))h" }
+        if hours >= 1 { return (formatNumber(hours), .hour) }
         let minutes = milliseconds / 60_000
-        if minutes >= 1 { return "\(formatNumber(minutes))m" }
-        return "\(formatNumber(milliseconds / 1_000))s"
+        if minutes >= 1 { return (formatNumber(minutes), .minute) }
+        return (formatNumber(milliseconds / 1_000), .second)
+    }
+
+    static func compactDuration(milliseconds: Double?) -> String? {
+        durationParts(milliseconds: milliseconds).map { "\($0.value)\($0.unit.letter)" }
+    }
+
+    // A window's length with its unit spelled out, such as "7 day", for speech.
+    static func spokenDuration(milliseconds: Double?) -> String? {
+        durationParts(milliseconds: milliseconds).map { "\($0.value) \($0.unit.word)" }
     }
 
     // The window length names a quota more briefly than its label does, so "Claude 7 Day (Fable)" becomes "7d Fable".
     // A parenthetical that only restates the window, such as "Grok Build (Weekly)", repeats the length and is dropped.
     static func shortLabel(for quota: UsageQuota) -> String {
-        guard
-            let window = quota.window,
-            let duration = compactDuration(milliseconds: window.durationMilliseconds)
-        else { return quota.label }
+        windowLabel(of: quota, length: compactDuration(milliseconds:))
+    }
+
+    // The short label with its window length in words, such as "7 day Fable".
+    static func spokenLabel(for quota: UsageQuota) -> String {
+        windowLabel(of: quota, length: spokenDuration(milliseconds:))
+    }
+
+    private static func windowLabel(of quota: UsageQuota, length: (Double?) -> String?) -> String {
+        guard let window = quota.window, let duration = length(window.durationMilliseconds) else { return quota.label }
         return quota.scopeDetail.map { "\(duration) \($0)" } ?? duration
     }
 
-    static func percentLeft(_ quota: UsageQuota) -> String? {
-        quota.remainingShare.map { "\(Int(($0 * 100).rounded()))%" }
+    // Names the quotas of one account for its provider's page. A quota keeps its short name. Quotas that would share one, such as the weekly
+    // pools of Grok that all read "7d", take what their labels say besides the provider and the window. Quotas that still share a name
+    // after that are counted, so every quota keeps a column of its own.
+    static func windowNames(for quotas: [UsageQuota], provider: String) -> [WindowName] {
+        let shorts = quotas.map(shortLabel(for:))
+        let names = zip(quotas, shorts).map { quota, short in
+            if shorts.filter({ $0 == short }).count > 1, let distinct = distinctName(of: quota, provider: provider) {
+                return WindowName(short: distinct, spoken: distinct)
+            }
+            return WindowName(short: short, spoken: spokenLabel(for: quota))
+        }
+        // A count must not land on a name a later quota already has, such as "Build 2", so every first name is reserved up front.
+        var taken = Set(names.map(\.short))
+        var kept: Set<String> = []
+        return names.map { name in
+            if kept.insert(name.short).inserted { return name }
+            var count = 2
+            while taken.contains("\(name.short) \(count)") { count += 1 }
+            taken.insert("\(name.short) \(count)")
+            return WindowName(short: "\(name.short) \(count)", spoken: "\(name.spoken) \(count)")
+        }
+    }
+
+    // What a label says besides the provider and its window, such as "Credits" in "SuperGrok Weekly Credits". A word fused to the
+    // provider's name goes with it, so "SuperGrok" drops whole and "GrokTasks" leaves "Tasks".
+    private static func distinctName(of quota: UsageQuota, provider: String) -> String? {
+        let providerName = ProviderRegistry.displayName(for: provider)
+        let windowWords = Set(PeriodWord.allCases.map(\.rawValue) + (quota.window?.label.lowercased().split(separator: " ").map(String.init) ?? []))
+        let words = quota.label
+            .split(whereSeparator: { $0.isWhitespace || $0 == "(" || $0 == ")" })
+            .compactMap { word -> String? in
+                var text = String(word)
+                if let name = text.range(of: providerName, options: [.caseInsensitive, .backwards]) {
+                    text = String(text[name.upperBound...])
+                }
+                return text.isEmpty || windowWords.contains(text.lowercased()) ? nil : text
+            }
+        return words.isEmpty ? nil : words.joined(separator: " ")
     }
 
     // Whole digits and a percent sign. An en dash stands for a share that is unknown.
     static func usedPercent(_ fraction: Double?) -> String {
         guard let fraction, fraction.isFinite else { return "–" }
         return "\(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
-    }
-
-    // The tag always carries the account number, such as "C1" for Claude Account 1.
-    static func accountTag(provider: String, number: Int) -> String {
-        "\(ProviderRegistry.badgeLetter(for: provider))\(number)"
     }
 
     static func countdown(to resetsAt: Date?, now: Date) -> ResetCountdown {
@@ -778,34 +881,23 @@ enum UsageFormatting {
         guard interval.isFinite, interval < Double(Int.max) else { return .unknown }
 
         let minutes = Int(interval / 60)
-        if minutes < 60 { return .remaining("\(max(1, minutes))m") }
-        let hours = minutes / 60
-        if hours < 24 { return .remaining("\(hours)h \(minutes % 60)m") }
-        return .remaining("\(hours / 24)d \(hours % 24)h")
-    }
-
-    static func resetDescription(for resetsAt: Date?, resetLabel: String?, now: Date) -> String {
-        switch countdown(to: resetsAt, now: now) {
-        case .unknown:
-            return "Reset unknown"
-        case .passed:
-            return "Reset passed · recheck"
-        case .remaining(let remaining):
-            let label = resetLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let verb: String
-            if let label, !label.isEmpty {
-                verb = String(label.prefix(1)).uppercased() + String(label.dropFirst())
-            } else {
-                verb = "Resets"
-            }
-            return "\(verb) in \(remaining)"
+        if minutes < 60 {
+            let shown = max(1, minutes)
+            return .remaining(compact: "\(shown)m", spoken: spokenSpan((shown, "minute")))
         }
+        let hours = minutes / 60
+        if hours < 24 {
+            return .remaining(compact: "\(hours)h \(minutes % 60)m", spoken: spokenSpan((hours, "hour"), (minutes % 60, "minute")))
+        }
+        return .remaining(compact: "\(hours / 24)d \(hours % 24)h", spoken: spokenSpan((hours / 24, "day"), (hours % 24, "hour")))
     }
 
-    // The reset text inside a line, such as "resets in 2h 5m" after a comma.
-    static func resetPhrase(for resetsAt: Date?, resetLabel: String?, now: Date) -> String {
-        let description = resetDescription(for: resetsAt, resetLabel: resetLabel, now: now)
-        return String(description.prefix(1)).lowercased() + String(description.dropFirst())
+    // For example "3 days 23 hours". A part that is zero is left out, so exactly one hour reads "1 hour".
+    private static func spokenSpan(_ parts: (value: Int, unit: String)...) -> String {
+        parts
+            .filter { $0.value > 0 }
+            .map { "\($0.value) \($0.unit)\($0.value == 1 ? "" : "s")" }
+            .joined(separator: " ")
     }
 
     static func ageDescription(_ seconds: TimeInterval) -> String {
