@@ -157,24 +157,13 @@ enum ProviderMenuBarRenderer {
         for placement in arrangement.placements {
             if let logo = placement.logo {
                 let box = CGRect(x: placement.originX, y: (height - logoHeight) / 2, width: placement.markWidth, height: logoHeight)
-                drawLogo(logo, in: box)
+                logo.draw(in: box)
             } else {
                 drawBadge(placement.item, at: placement.originX, ink: ink, in: context)
             }
             let textInk = placement.item.isStale ? quietInk : ink
             drawText(placement.item.text, font: font, at: CGPoint(x: placement.textX, y: baseline), color: textInk, in: context)
         }
-    }
-
-    private static func drawLogo(_ logo: ProviderLogo, in box: CGRect) {
-        logo.image.draw(
-            in: box,
-            from: logo.visibleRect,
-            operation: .sourceOver,
-            fraction: 1,
-            respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.high.rawValue]
-        )
     }
 
     private static func drawBadge(_ item: Item, at originX: CGFloat, ink: CGColor, in context: CGContext) {

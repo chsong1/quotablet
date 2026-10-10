@@ -41,7 +41,7 @@ Set `DEVELOPER_DIR` on each command. Keep DerivedData under the ignored `.local/
 
 ## What it does
 
-Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one item for each provider that OMP reports on. An item is the provider's logo and the share of that provider's combined limit that is used. The panel groups quotas by status, and a collapsed **All quotas** list holds every report that OMP returned.
+Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one item for each provider that OMP reports on. An item is the provider's logo and the share of that provider's combined limit that is used. The panel opens with a petal chart of the same providers and a legend. A collapsed **Details** list groups quotas by status, and a collapsed **All quotas** list holds every report that OMP returned.
 
 **Collection cadence.** On launch the app loads any saved snapshot, then refreshes immediately. It refreshes again every 5 minutes and whenever you press the panel refresh control. A separate presentation clock ticks every 30 seconds so age and reset countdowns move without another OMP call.
 
@@ -72,10 +72,10 @@ The figure of a provider comes from the capacity quotas of its measured accounts
 
 Put the files in `~/Library/Application Support/Quotablet/Logos/`, beside `settings.json`. Quotablet only reads that directory and never writes to it. For a provider id such as `anthropic`, `openai-codex`, `xai-oauth`, or `cursor`, Quotablet takes the first of these files that exists.
 
-- On a dark menu bar: `<id>-on-dark.pdf`, `<id>-on-dark.png`, `<id>.pdf`, then `<id>.png`.
-- On a light menu bar: `<id>-on-light.pdf`, `<id>-on-light.png`, `<id>.pdf`, then `<id>.png`.
+- On a dark menu bar or panel: `<id>-on-dark.pdf`, `<id>-on-dark.png`, `<id>.pdf`, then `<id>.png`.
+- On a light menu bar or panel: `<id>-on-light.pdf`, `<id>-on-light.png`, `<id>.pdf`, then `<id>.png`.
 
-The id is the provider id in lowercase. A PDF stays sharp at every scale, so prefer it. Quotablet picks the variant each time the menu bar image is drawn, so a change of the menu bar's appearance switches the file.
+The id is the provider id in lowercase. A PDF stays sharp at every scale, so prefer it. Quotablet picks the variant each time the menu bar image is drawn, so a change of the menu bar's appearance switches the file. The panel picks the variant from its own appearance.
 
 Quotablet draws each logo exactly as its file provides it. It never recolors, tints, dims, masks, outlines, shadows, rotates, or stretches a logo, and a stale provider's logo looks like a fresh one. It does trim the transparent margin around the artwork, which does not change the mark, because some official files are about half margin. It then scales the artwork to a height of 15 pt with its aspect ratio kept and centers it vertically in the menu bar. The menu bar image is not a template image, so a logo keeps its colors. The percentages use the system label colors and follow the menu bar's appearance. Keep logo files out of this repository. The tests draw invented shapes.
 
@@ -87,9 +87,25 @@ Quotablet loads each file once and keeps it in memory. On each 30 second present
 - **Stale.** Provider data is 15 minutes old or older. The badge dims and 1 pt stripes cross the filled part. The stripes keep an exhausted stale provider from looking like a fresh, unused one. An unknown badge dims by the same proportion when its data is stale. It has no fill, so it has no stripes.
 - **Unknown.** No account of the provider reports a usable share. The badge is a 1 pt outline with a solid letter and no fill, so it never reads as 0% or 100%.
 
-**No pins.** Earlier builds pinned quotas to the menu bar. The menu bar now follows providers, so pins, the pin buttons, the summary card, and the petal chart are gone. A `pinnedQuotas` key in an old `settings.json` is ignored and is dropped the next time Quotablet saves its settings.
+**Provider flower.** The panel opens with a card that draws each provider as one petal of a flower and lists the providers in a legend beside it. A petal shows the same figure as the menu bar item of its provider, the share of the combined limit that is used. The petals keep the menu bar order. The first petal sits at 12 o'clock and the rest follow clockwise. Each petal takes a color from a fixed eight-color palette by its position, so no petal uses a brand color, and it carries its provider's badge letter.
 
-**Needs attention.** The status groups below list the quotas that need attention. A quota needs attention when OMP reports its status as exhausted or near limit, or when its remaining amount is zero or below. A quota that OMP reports as available, or without a recognized status, needs attention only when its remaining amount is zero or below. Quotablet adds no percentage threshold and no setting.
+A petal fills outward from its inner edge. The fill covers the used share of the petal's area and not of its length, because a petal widens toward its tip. A petal has one of three looks.
+
+- **Fresh.** The unused part is a pale track and the used part is solid.
+- **Stale.** Provider data is 15 minutes old or older. The fill is desaturated and dimmed, and 1.5 pt stripes cross it, so an exhausted stale provider does not look like a fresh, unused one.
+- **Unknown.** No account of the provider reports a usable share. The petal is an outline with no fill, so it never reads as 0% or 100%.
+
+The chart appears for three to eight providers. With one, two, or more than eight providers, the card shows the legend alone.
+
+The legend has one row for each provider. A row holds a dot in the petal's color, the provider's logo, the provider's name, the number of accounts the figure covers, and the used share. The accounts read `5 accounts`, `4 of 5 accounts` when only four of five have a usable figure, or `1 account`. The share reads `79% used`, or `Unknown` when the provider has no usable figure. A stale provider adds `Stale` in orange under its share. When a row is too narrow, the name shortens in its middle and the share never shortens.
+
+The legend draws a logo from the same files as the menu bar, unmodified and trimmed to its artwork, at 14 pt tall. A logo wider than 2:1 shrinks, with its shape unchanged, to fit a column 28 pt wide. Every row reserves the column of the widest logo, so the names line up. A provider with no logo file leaves its place in that column empty, and the legend draws no letter badge.
+
+VoiceOver reads the chart as one element and hides its petals. The chart reads the sentence of every provider joined by semicolons, as the menu bar text does. VoiceOver reads each legend row as one element with that provider's sentence, and adds `stale` when the provider is stale.
+
+**No pins.** Earlier builds pinned quotas to the menu bar. The menu bar now follows providers, so pins, the pin buttons, and the summary card are gone. The petal chart returned as the provider flower, with one petal for each provider. A `pinnedQuotas` key in an old `settings.json` is ignored and is dropped the next time Quotablet saves its settings.
+
+**Needs attention.** The status groups in **Details** list the quotas that need attention. A quota needs attention when OMP reports its status as exhausted or near limit, or when its remaining amount is zero or below. A quota that OMP reports as available, or without a recognized status, needs attention only when its remaining amount is zero or below. Quotablet adds no percentage threshold and no setting.
 
 Quotablet ranks quotas with one comparator, and the first difference decides.
 
@@ -100,7 +116,7 @@ Quotablet ranks quotas with one comparator, and the first difference decides.
 
 So exhausted quotas come first with the soonest reset on top, and near-limit quotas follow with the least remaining on top.
 
-**Status groups.** The panel opens with up to three groups. A group appears only when it has rows, and its header counts rows, not accounts or quotas.
+**Status groups.** The collapsed **Details** list below the flower opens to the status groups. Its label counts the Exhausted and Near limit rows, so a problem stays visible while the list is closed. It reads `Details · 1 exhausted, 4 near limit`, names only a group that has rows, and reads `Details · all OK` when neither group has one. VoiceOver reads it as `Details, 1 exhausted, 4 near limit`. Quotablet does not save whether the list is open. The list holds up to three groups. A group appears only when it has rows, and its header counts rows, not accounts or quotas.
 
 - **Exhausted** lists quotas that ran out, under a red header. The large figure is the time until the quota resets, such as `9h 21m`. A reset time in the past reads `Recheck`, and a missing reset time reads a dash. The header caption is `resets in`.
 - **Near limit** lists quotas that OMP reports as near limit, under an orange header. The large figure is the share left, such as `3%`. A small line under it shows the reset, such as `resets 4d 14h`. The header caption is `left`.
@@ -114,7 +130,7 @@ An account can sit under Exhausted while some of its quotas still work. OMP repo
 
 VoiceOver reads each group header as a heading, such as `Exhausted, 2`, and each row as one element, such as `Claude Account 1, 7 Day exhausted, resets in 9h 21m`, `Codex Account 1, 7 days near limit, 3% left, resets in 4d 14h`, or `Claude Account 2, OK, 7 Day, 22% left`. A spoken row keeps the parenthetical of the quota label, as in `Grok Account 1, OK, Grok Build (Weekly), 40% left`. No window length sits beside the label, so the parenthetical repeats nothing. A row uses the account label from the eye button, so a revealed identifier replaces `Account 1`. A stale row ends with `stale`.
 
-**All quotas.** Below the groups, a collapsed **All quotas · N** list holds one account section for each report that OMP returned. N counts quotas. Each section shows the remaining amount and the reset time of every quota. An account that reports no quotas appears only in this list. Each account section gets a second header line when that account has a quota that needs attention. The line names the account's top-ranked quota, such as `Claude 7 Day exhausted · resets in 18h 5m` in red or `Claude 5 Hour near limit · resets in 2h 10m` in orange. Account sections keep the order OMP sends.
+**All quotas.** Below **Details**, a collapsed **All quotas · N** list holds one account section for each report that OMP returned. N counts quotas. Each section shows the remaining amount and the reset time of every quota. An account that reports no quotas appears only in this list. Each account section gets a second header line when that account has a quota that needs attention. The line names the account's top-ranked quota, such as `Claude 7 Day exhausted · resets in 18h 5m` in red or `Claude 5 Hour near limit · resets in 2h 10m` in orange. Account sections keep the order OMP sends.
 
 The header line names a quota and never says that the account is blocked. OMP reports each quota on its own, and some quotas, such as `7 Day (Fable)`, cover only certain models. The data does not say which quotas cover the whole account. So Quotablet reports the quota that ran out and leaves the conclusion to you.
 

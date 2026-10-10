@@ -1097,6 +1097,26 @@ final class StatusGroupsTests: XCTestCase {
         XCTAssertEqual(AccountStatus.ok.headerLabel(count: 6), "OK, 6")
     }
 
+    func testTheDetailsLabelCountsTheLinesOfEachGroupThatNeedsAttention() {
+        func overview(exhausted: Int, nearLimit: Int) -> StatusOverview {
+            let outOfQuota = (0..<exhausted).map { index in
+                report("anthropic", accountID: "out-\(index)", quotas: [quota("Claude 7 Day", windowLabel: "7 Day", status: .exhausted, remainingPercent: 0)])
+            }
+            let closeToTheLimit = (0..<nearLimit).map { index in
+                report("openai-codex", accountID: "near-\(index)", quotas: [quota("7 days", windowLabel: "7 days", status: .nearLimit, remainingPercent: 3)])
+            }
+            let healthy = report("cursor", accountID: "fine", quotas: [quota("Cursor Models", windowLabel: "Monthly", remainingPercent: 80)])
+            return statusOverview(outOfQuota + closeToTheLimit + [healthy])
+        }
+
+        XCTAssertEqual(overview(exhausted: 0, nearLimit: 0).detailsLabel, "Details · all OK")
+        XCTAssertEqual(overview(exhausted: 2, nearLimit: 0).detailsLabel, "Details · 2 exhausted")
+        XCTAssertEqual(overview(exhausted: 0, nearLimit: 3).detailsLabel, "Details · 3 near limit")
+        XCTAssertEqual(overview(exhausted: 1, nearLimit: 4).detailsLabel, "Details · 1 exhausted, 4 near limit")
+        XCTAssertEqual(overview(exhausted: 0, nearLimit: 0).detailsSpokenLabel, "Details, all OK")
+        XCTAssertEqual(overview(exhausted: 1, nearLimit: 4).detailsSpokenLabel, "Details, 1 exhausted, 4 near limit")
+    }
+
     // The container colors are the opaque panel colors the prototype measured behind each group, over a black and a gray backdrop.
     @MainActor
     func testEachInkReadsAtFourPointFiveToOneOnItsGroupInBothAppearances() throws {

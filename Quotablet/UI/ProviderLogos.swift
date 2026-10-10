@@ -119,6 +119,29 @@ struct ProviderLogo: Sendable {
             height: pixels.height * scaleY
         )
     }
+
+    // Draws the artwork exactly as the file provides it, scaled to fill `box`. A mark is never tinted, dimmed, masked or outlined,
+    // because its owner forbids altering it.
+    func draw(in box: CGRect) {
+        image.draw(
+            in: box,
+            from: visibleRect,
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high.rawValue]
+        )
+    }
+
+    // The artwork alone, `height` points tall, as an image a SwiftUI `Image` can show.
+    func artwork(height: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: height * aspectRatio, height: height), flipped: false) { @Sendable box in
+            draw(in: box)
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
 }
 
 // Every readable logo file of one directory, loaded once.

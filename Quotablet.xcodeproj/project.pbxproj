@@ -27,6 +27,9 @@
 		A10000000000000000000013 /* StatusGroups.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* StatusGroups.swift */; };
 		A10000000000000000000014 /* StatusGroups.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* StatusGroups.swift */; };
 		A10000000000000000000015 /* ProviderLogosTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* ProviderLogosTests.swift */; };
+		A10000000000000000000016 /* ProviderFlower.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ProviderFlower.swift */; };
+		A10000000000000000000017 /* ProviderFlower.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ProviderFlower.swift */; };
+		A10000000000000000000018 /* ProviderFlowerTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* ProviderFlowerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +49,8 @@
 		B1000000000000000000000E /* ProviderLogos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderLogos.swift; sourceTree = "<group>"; };
 		B1000000000000000000000F /* StatusGroups.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusGroups.swift; sourceTree = "<group>"; };
 		B10000000000000000000010 /* ProviderLogosTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderLogosTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000011 /* ProviderFlower.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderFlower.swift; sourceTree = "<group>"; };
+		B10000000000000000000012 /* ProviderFlowerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderFlowerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,9 +90,9 @@
 		D10000000000000000000005 /* Domain */ = {isa = PBXGroup; path = Domain; sourceTree = "<group>"; children = (B10000000000000000000001 /* UsageDomain.swift */,); };
 		D10000000000000000000006 /* OMP */ = {isa = PBXGroup; path = OMP; sourceTree = "<group>"; children = (B10000000000000000000002 /* OMPClient.swift */,); };
 		D10000000000000000000007 /* Store */ = {isa = PBXGroup; path = Store; sourceTree = "<group>"; children = (B10000000000000000000003 /* AppPersistence.swift */, B10000000000000000000004 /* UsageStore.swift */,); };
-		D10000000000000000000008 /* UI */ = {isa = PBXGroup; path = UI; sourceTree = "<group>"; children = (B10000000000000000000005 /* UsagePanel.swift */, B1000000000000000000000D /* ProviderMenuBarRenderer.swift */, B1000000000000000000000E /* ProviderLogos.swift */, B1000000000000000000000F /* StatusGroups.swift */,); };
+		D10000000000000000000008 /* UI */ = {isa = PBXGroup; path = UI; sourceTree = "<group>"; children = (B10000000000000000000005 /* UsagePanel.swift */, B1000000000000000000000D /* ProviderMenuBarRenderer.swift */, B1000000000000000000000E /* ProviderLogos.swift */, B1000000000000000000000F /* StatusGroups.swift */, B10000000000000000000011 /* ProviderFlower.swift */,); };
 		D10000000000000000000009 /* App */ = {isa = PBXGroup; path = App; sourceTree = "<group>"; children = (B10000000000000000000006 /* QuotabletApp.swift */,); };
-		D10000000000000000000003 /* QuotabletTests */ = {isa = PBXGroup; path = QuotabletTests; sourceTree = "<group>"; children = (B10000000000000000000007 /* UsageDomainTests.swift */, B10000000000000000000008 /* UsageStoreTests.swift */, B10000000000000000000009 /* OMPClientTests.swift */, B10000000000000000000010 /* ProviderLogosTests.swift */,); };
+		D10000000000000000000003 /* QuotabletTests */ = {isa = PBXGroup; path = QuotabletTests; sourceTree = "<group>"; children = (B10000000000000000000007 /* UsageDomainTests.swift */, B10000000000000000000008 /* UsageStoreTests.swift */, B10000000000000000000009 /* OMPClientTests.swift */, B10000000000000000000010 /* ProviderLogosTests.swift */, B10000000000000000000012 /* ProviderFlowerTests.swift */,); };
 		D10000000000000000000004 /* Products */ = {isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (B1000000000000000000000A /* Quotablet.app */, B1000000000000000000000B /* QuotabletTests.xctest */,); };
 /* End PBXGroup section */
 
@@ -159,6 +164,7 @@
 				A1000000000000000000000F /* ProviderMenuBarRenderer.swift in App Sources */,
 				A10000000000000000000011 /* ProviderLogos.swift in App Sources */,
 				A10000000000000000000013 /* StatusGroups.swift in App Sources */,
+				A10000000000000000000016 /* ProviderFlower.swift in App Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -177,6 +183,8 @@
 				A10000000000000000000010 /* ProviderMenuBarRenderer.swift in Test Sources */,
 				A10000000000000000000012 /* ProviderLogos.swift in Test Sources */,
 				A10000000000000000000014 /* StatusGroups.swift in Test Sources */,
+				A10000000000000000000017 /* ProviderFlower.swift in Test Sources */,
+				A10000000000000000000018 /* ProviderFlowerTests.swift in Test Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
