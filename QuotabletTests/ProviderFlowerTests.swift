@@ -1,84 +1,142 @@
+import AppKit
 import CoreGraphics
 import SwiftUI
 import XCTest
 
 final class ProviderFlowerTests: XCTestCase {
-    func testAFlowerNeedsThreeToEightProvidersAndOtherCountsGetTheLegendAlone() {
-        let layouts = (0...10).map(FlowerLayout.forProviderCount)
-
-        XCTAssertEqual(layouts, [
-            .legendOnly, .legendOnly, .legendOnly,
-            .flowerAndLegend, .flowerAndLegend, .flowerAndLegend, .flowerAndLegend, .flowerAndLegend, .flowerAndLegend,
-            .legendOnly, .legendOnly
+    func testAFlowerNeedsThreeToEightItemsAndOtherCountsFallBackToRows() {
+        XCTAssertEqual((0...10).map(FlowerLayout.forItemCount), [
+            .list, .list, .list,
+            .flower, .flower, .flower, .flower, .flower, .flower,
+            .list, .list
         ])
     }
 
-    func testPetalsFollowTheMenuBarOrderAndCarryEachProvidersLetterAndFillAsWholePercents() {
+    func testAProviderPageDrawsAFlowerOfItsAccountsOnlyFromThreeToEightAccounts() throws {
+        func layout(accountCount: Int) throws -> FlowerLayout {
+            let drafts = (0..<accountCount).map { index in
+                UsageReportDraft(
+                    provider: "anthropic",
+                    sourceAccount: SourceAccountIdentity(accountID: "claude-\(index)", organizationID: nil, projectID: nil),
+                    privateDisplayLabel: nil,
+                    fetchedAt: RealisticFixture.fetchedAt,
+                    resetCredits: nil,
+                    quotas: []
+                )
+            }
+            let snapshot = UsageSnapshot(generatedAt: RealisticFixture.fetchedAt, reportDrafts: drafts)
+            let detail = try XCTUnwrap(snapshot.providerDetail(of: "anthropic", now: RealisticFixture.fetchedAt))
+            return FlowerLayout.forItemCount(detail.accounts.count)
+        }
+
+        XCTAssertEqual(try [2, 3, 8, 9].map(layout(accountCount:)), [.list, .flower, .flower, .list])
+    }
+
+    func testPetalsFollowTheMenuBarOrderAndCarryEachProvidersUsedPercentAndBadge() {
         let petals = providers().map(Petal.init)
 
-        XCTAssertEqual(petals.map(\.letter), ["C", "O", "G", "U"])
+        XCTAssertEqual(petals.map(\.text), ["79%", "94%", "1%", "100%"])
         XCTAssertEqual(percents(petals), [79, 94, 1, 100])
         XCTAssertEqual(petals.map(\.isStale), [false, false, false, false])
+        XCTAssertEqual(petals.map(\.badge), [AttentionBadge(urgency: .exhausted, count: 5), nil, nil, AttentionBadge(urgency: .exhausted, count: 1)])
     }
 
-    func testAProviderWithNoMeasuredAccountGetsAPetalWithoutAFill() {
+    func testAProviderWithNoMeasuredAccountGetsAnOutlinePetalWithADashAndNoBadge() {
         let petals = providers(unmeasuredClaudeAccounts: 5).map(Petal.init)
 
-        XCTAssertEqual(petals.map(\.letter), ["C", "O", "G", "U"])
+        XCTAssertEqual(petals.map(\.text), ["–", "94%", "1%", "100%"])
         XCTAssertEqual(percents(petals), [nil, 94, 1, 100])
+        XCTAssertNil(petals[0].badge)
     }
 
-    func testPetalsTurnStaleWhenTheirProvidersDataReachesTheStaleBoundary() {
+    func testPetalsTurnStaleWhenEveryMeasuredAccountOfTheirProviderReachesTheStaleBoundary() {
         XCTAssertEqual(providers(afterSeconds: 899).map(Petal.init).map(\.isStale), [false, false, false, false])
         XCTAssertEqual(providers(afterSeconds: 900).map(Petal.init).map(\.isStale), [true, true, true, true])
     }
 
-    func testTheLegendSaysHowManyAccountsEachFigureCovers() {
+    func testAnAccountPetalCarriesItsNumberItsCapacityFillAndItsOwnBadge() throws {
+        let detail = try XCTUnwrap(RealisticFixture.snapshot().providerDetail(of: "anthropic", now: RealisticFixture.fetchedAt))
+
+        let petals = detail.accounts.map(Petal.init)
+
+        XCTAssertEqual(petals.map(\.text), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(percents(petals), [100, 90, 80, 70, 55])
+        XCTAssertEqual(petals.map(\.badge), [AttentionBadge?](repeating: AttentionBadge(urgency: .exhausted, count: 1), count: 5))
+    }
+
+    func testAListRowAndAPetalSayHowManyAccountsEachFigureCovers() {
         XCTAssertEqual(providers().map(\.accountsPhrase), ["5 accounts", "3 accounts", "1 account", "1 account"])
         XCTAssertEqual(providers(unmeasuredClaudeAccounts: 1).map(\.accountsPhrase), ["4 of 5 accounts", "3 accounts", "1 account", "1 account"])
         XCTAssertEqual(providers(unmeasuredClaudeAccounts: 5).first?.accountsPhrase, "5 accounts")
     }
 
-    func testTheLegendReadsTheUsedShareOrUnknown() {
+    func testThePillReadsTheUsedShareOrUnknown() {
         XCTAssertEqual(providers().map(\.usedText), ["79% used", "94% used", "1% used", "100% used"])
         XCTAssertEqual(providers(unmeasuredClaudeAccounts: 1).first?.usedText, "74% used")
         XCTAssertEqual(providers(unmeasuredClaudeAccounts: 5).first?.usedText, "Unknown")
     }
 
-    func testEachLegendRowSpeaksItsProvidersSummaryAndEndsWithStaleWhenItIs() {
-        XCTAssertEqual(providers().map(\.legendAccessibilityLabel), [
-            "Claude 79% used across 5 accounts",
+    func testEachPetalSpeaksItsProvidersSummaryThenWhatNeedsAttentionThenStale() {
+        XCTAssertEqual(providers().map(\.petalAccessibilityLabel), [
+            "Claude 79% used across 5 accounts, 5 exhausted",
             "Codex 94% used across 3 accounts",
             "Grok 1% used, 1 account",
-            "Cursor 100% used, 1 account"
+            "Cursor 100% used, 1 account, 1 exhausted"
         ])
-        XCTAssertEqual(providers(afterSeconds: 900).map(\.legendAccessibilityLabel), [
-            "Claude 79% used across 5 accounts, stale",
+        XCTAssertEqual(providers(afterSeconds: 900).map(\.petalAccessibilityLabel), [
+            "Claude 79% used across 5 accounts, 5 exhausted, stale",
             "Codex 94% used across 3 accounts, stale",
             "Grok 1% used, 1 account, stale",
-            "Cursor 100% used, 1 account, stale"
+            "Cursor 100% used, 1 account, 1 exhausted, stale"
         ])
-        XCTAssertEqual(providers(unmeasuredClaudeAccounts: 5).first?.legendAccessibilityLabel, "Claude usage unknown across 5 accounts")
+        XCTAssertEqual(providers(unmeasuredClaudeAccounts: 1).first?.petalAccessibilityLabel, "Claude 74% used across 4 of 5 accounts, 4 exhausted")
+        XCTAssertEqual(providers(unmeasuredClaudeAccounts: 5).first?.petalAccessibilityLabel, "Claude usage unknown across 5 accounts")
     }
 
-    func testTheChartSpeaksEveryProvidersSummaryInOneSentence() {
+    func testAPetalSpeaksBothAttentionCountsWhenSomeAccountsRanOutAndSomeAreClose() {
+        func label(exhausted: Int, nearLimit: Int) -> String {
+            ProviderUsage(
+                provider: "anthropic",
+                accountCount: 5,
+                measured: [],
+                usedFraction: 0.68,
+                isStale: false,
+                attention: ProviderAttention(exhaustedAccounts: exhausted, nearLimitAccounts: nearLimit)
+            ).petalAccessibilityLabel
+        }
+
+        XCTAssertEqual(label(exhausted: 0, nearLimit: 1), "Claude 68% used across 5 accounts, 1 near limit")
+        XCTAssertEqual(label(exhausted: 1, nearLimit: 2), "Claude 68% used across 5 accounts, 1 exhausted, 2 near limit")
+        XCTAssertEqual(label(exhausted: 0, nearLimit: 0), "Claude 68% used across 5 accounts")
+    }
+
+    func testTheMenuBarItemSpeaksEveryProvidersSummaryInOneSentence() {
         XCTAssertEqual(
             providers().spokenSummary,
             "Claude 79% used across 5 accounts; Codex 94% used across 3 accounts; Grok 1% used, 1 account; Cursor 100% used, 1 account"
         )
     }
 
-    func testALegendLogoIsFourteenPointsTallAndShrinksOnlyWhenItIsWiderThanTwoToOne() {
-        XCTAssertEqual(LegendLogo.size(aspectRatio: 1), CGSize(width: 14, height: 14))
-        XCTAssertEqual(LegendLogo.size(aspectRatio: 0.5), CGSize(width: 7, height: 14))
-        XCTAssertEqual(LegendLogo.size(aspectRatio: 2), CGSize(width: 28, height: 14))
-        XCTAssertEqual(LegendLogo.size(aspectRatio: 4), CGSize(width: 28, height: 7))
+    func testALogoKeepsItsHeightAndShrinksOnlyWhenItIsWiderThanTheLimit() {
+        XCTAssertEqual(LogoFit.size(aspectRatio: 1, height: 18, maxWidth: 36), CGSize(width: 18, height: 18))
+        XCTAssertEqual(LogoFit.size(aspectRatio: 0.5, height: 18, maxWidth: 36), CGSize(width: 9, height: 18))
+        XCTAssertEqual(LogoFit.size(aspectRatio: 2, height: 18, maxWidth: 36), CGSize(width: 36, height: 18))
+        XCTAssertEqual(LogoFit.size(aspectRatio: 4, height: 18, maxWidth: 36), CGSize(width: 36, height: 9))
     }
 
-    func testThePaletteHoldsEightDistinctColorsAndWrapsPastThem() {
-        XCTAssertEqual(Set((0..<8).map(QuotaPalette.color(at:))).count, 8)
-        XCTAssertEqual(QuotaPalette.color(at: 8), QuotaPalette.color(at: 0))
-        XCTAssertEqual(QuotaPalette.color(at: -1), QuotaPalette.color(at: 7))
+    func testPetalDigitsNeverGrowAsPetalsMultiplyAndScaleInStepWithTheFlower() throws {
+        let sizes = FlowerLayout.petalRange.map { PetalLabelStyle.percent(petalCount: $0, diameter: 300).size }
+        for (wider, narrower) in zip(sizes, sizes.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(wider, narrower)
+        }
+        XCTAssertGreaterThan(try XCTUnwrap(sizes.first), try XCTUnwrap(sizes.last))
+        for count in FlowerLayout.petalRange {
+            XCTAssertEqual(PetalLabelStyle.percent(petalCount: count, diameter: 150).size * 2, PetalLabelStyle.percent(petalCount: count, diameter: 300).size, accuracy: 1e-9)
+        }
+        let numbers = FlowerLayout.petalRange.map { PetalLabelStyle.number(petalCount: $0).size }
+        for (wider, narrower) in zip(numbers, numbers.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(wider, narrower)
+        }
     }
 
     private func providers(unmeasuredClaudeAccounts: Int = 0, afterSeconds: TimeInterval = 0) -> [ProviderUsage] {
@@ -88,6 +146,84 @@ final class ProviderFlowerTests: XCTestCase {
 
     private func percents(_ petals: [Petal]) -> [Double?] {
         petals.map { petal in petal.usedFraction.map { ($0 * 100).rounded() } }
+    }
+}
+
+final class QuotaPaletteTests: XCTestCase {
+    func testThePaletteHoldsEightDistinctColorsAndWrapsPastThem() {
+        XCTAssertEqual(Set((0..<8).map(QuotaPalette.color(at:))).count, 8)
+        XCTAssertEqual(QuotaPalette.color(at: 8), QuotaPalette.color(at: 0))
+        XCTAssertEqual(QuotaPalette.color(at: -1), QuotaPalette.color(at: 7))
+    }
+
+    @MainActor
+    func testNoPaletteColorIsAVividRedOrangeYellowOrGreen() throws {
+        // Status badges and inks use these hues. A muted color such as gray or brown has a hue on paper and means no status.
+        func readsAsStatus(_ color: ColorProbe.RGB) -> Bool {
+            guard let hue = color.hue else { return false }
+            return color.saturation >= 0.5 && (hue >= 345 || hue < 170)
+        }
+
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            for index in 0..<8 {
+                let color = try ColorProbe.resolve(NSColor(QuotaPalette.color(at: index)), in: name)
+                XCTAssertFalse(readsAsStatus(color), "palette color \(index) in \(name.rawValue), hue \(color.hue ?? -1), saturation \(color.saturation)")
+            }
+            // The check flags the colors the palette used to hold, so it cannot pass for want of a working hue test.
+            for old in [Color.orange, .green, .pink, .yellow] {
+                XCTAssertTrue(readsAsStatus(try ColorProbe.resolve(NSColor(old), in: name)), "\(old) in \(name.rawValue)")
+            }
+        }
+    }
+
+    // Three to one is the limit WCAG sets for large text, which a petal's digits are.
+    @MainActor
+    func testThePetalInkReadsAtThreeToOneOnEveryPaletteColorInBothAppearances() throws {
+        let ink = try XCTUnwrap(NSColor(PetalLook.inkOnColor).usingColorSpace(.sRGB))
+        let alpha = Double(ink.alphaComponent)
+
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            for index in 0..<8 {
+                let fill = try ColorProbe.resolve(NSColor(QuotaPalette.color(at: index)), in: name)
+                let over = ColorProbe.RGB(
+                    red: Double(ink.redComponent) * alpha + fill.red * (1 - alpha),
+                    green: Double(ink.greenComponent) * alpha + fill.green * (1 - alpha),
+                    blue: Double(ink.blueComponent) * alpha + fill.blue * (1 - alpha)
+                )
+                XCTAssertGreaterThanOrEqual(ColorProbe.contrast(over, fill), 3, "palette color \(index) in \(name.rawValue)")
+            }
+        }
+    }
+}
+
+final class FlowerGeometryTests: XCTestCase {
+    func testAPointResolvesToThePetalThatHoldsItAndToNilOverGapsTheHoleAndOutside() {
+        let flower = FlowerGeometry(petalCount: 4, diameter: 150)
+        let middle = flower.center
+        // Twelve, three, six and nine o'clock, 46 pt from the center.
+        let compass = [
+            CGPoint(x: middle.x, y: middle.y - 46),
+            CGPoint(x: middle.x + 46, y: middle.y),
+            CGPoint(x: middle.x, y: middle.y + 46),
+            CGPoint(x: middle.x - 46, y: middle.y),
+        ]
+        // The 6 degree gap between the first two petals runs along the up-right diagonal.
+        let gap = CGPoint(x: middle.x + 46 * cos(-.pi / 4), y: middle.y + 46 * sin(-.pi / 4))
+
+        XCTAssertEqual(compass.map { flower.index(containing: $0) }, [0, 1, 2, 3])
+        XCTAssertNil(flower.index(containing: gap))
+        XCTAssertNil(flower.index(containing: middle))
+        XCTAssertNil(flower.index(containing: CGPoint(x: 200, y: 75)))
+    }
+
+    func testEveryPetalOfEveryFlowerSizeIsFoundAtItsOwnAxis() {
+        for count in FlowerLayout.petalRange {
+            let flower = FlowerGeometry(petalCount: count, diameter: 300)
+
+            let found = flower.petals.map { flower.index(containing: $0.axisPoint(atRadius: 100, in: flower.center)) }
+
+            XCTAssertEqual(found, Array(0..<count), "\(count) petals")
+        }
     }
 }
 
@@ -198,16 +334,39 @@ final class PetalGeometryTests: XCTestCase {
         XCTAssertTrue(path.contains(point(radius: 50, degrees: -34.5)))
     }
 
-    func testLabelSitsInsideItsPetalAtTheMiddleOfTheOuterThird() {
+    func testAxisPointsLieOnTheirPetalAndItsBadgeSitsInsideNearTheTip() {
         for count in FlowerLayout.petalRange {
             for index in 0..<count {
                 let petal = PetalGeometry(petalCount: count, index: index, outerRadius: 75)
-                let label = petal.labelCenter(in: center)
+                let path = petal.path(in: center)
+                let onAxis = petal.axisPoint(atRadius: 65.5, in: center)
+                let badge = petal.badgeCenter(in: center)
+                let badgeDistance = hypot(badge.x - center.x, badge.y - center.y)
 
-                XCTAssertEqual(hypot(label.x - center.x, label.y - center.y), 65.5, accuracy: 1e-6)
-                XCTAssertTrue(petal.path(in: center).contains(label), "\(count) petals, index \(index)")
+                XCTAssertEqual(hypot(onAxis.x - center.x, onAxis.y - center.y), 65.5, accuracy: 1e-6)
+                XCTAssertTrue(path.contains(onAxis), "\(count) petals, index \(index)")
+                XCTAssertGreaterThan(badgeDistance, 75 * 0.8)
+                XCTAssertLessThan(badgeDistance, 75)
+                XCTAssertTrue(path.contains(badge), "badge of \(count) petals, index \(index)")
             }
         }
+    }
+
+    func testABoxBeyondTheTipKeepsTheSameGapWhateverThePetalsAngle() {
+        let size = CGSize(width: 36, height: 18)
+        let petals = (0..<4).map { PetalGeometry(petalCount: 4, index: $0, outerRadius: 75) }
+
+        let centers = petals.map { $0.boxCenter(size: size, beyondTipBy: 7, in: center) }
+
+        // Twelve and six o'clock clear half the box's height, and three and nine o'clock half its width.
+        XCTAssertEqual(centers[0].x, 100, accuracy: 1e-9)
+        XCTAssertEqual(centers[0].y, 100 - (75 + 7 + 9), accuracy: 1e-9)
+        XCTAssertEqual(centers[1].x, 100 + (75 + 7 + 18), accuracy: 1e-9)
+        XCTAssertEqual(centers[1].y, 100, accuracy: 1e-9)
+        XCTAssertEqual(centers[2].x, 100, accuracy: 1e-9)
+        XCTAssertEqual(centers[2].y, 100 + (75 + 7 + 9), accuracy: 1e-9)
+        XCTAssertEqual(centers[3].x, 100 - (75 + 7 + 18), accuracy: 1e-9)
+        XCTAssertEqual(centers[3].y, 100, accuracy: 1e-9)
     }
 
     private var center: CGPoint { CGPoint(x: 100, y: 100) }
