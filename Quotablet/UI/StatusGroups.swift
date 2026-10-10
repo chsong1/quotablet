@@ -33,6 +33,25 @@ extension AccountStatus {
     }
 }
 
+extension StatusOverview {
+    // What the Details disclosure says while it is closed, so a problem stays visible: "1 exhausted, 4 near limit", or "all OK".
+    private var attentionSummary: String {
+        var parts: [String] = []
+        if !exhausted.isEmpty { parts.append("\(exhausted.count) \(AccountStatus.exhausted.title.lowercased())") }
+        if !nearLimit.isEmpty { parts.append("\(nearLimit.count) \(AccountStatus.nearLimit.title.lowercased())") }
+        return parts.isEmpty ? "all \(AccountStatus.ok.title)" : parts.joined(separator: ", ")
+    }
+
+    var detailsLabel: String {
+        "Details · \(attentionSummary)"
+    }
+
+    // VoiceOver gets a comma where the label has a middle dot, as the All quotas disclosure does.
+    var detailsSpokenLabel: String {
+        "Details, \(attentionSummary)"
+    }
+}
+
 enum StatusInk {
     // Plain system colors measured about 1.7:1 (orange, green) and 2.7:1 (red) as text on the light panel,
     // so text, symbols, figures and bars take their own shade in each appearance.
@@ -460,7 +479,7 @@ private struct RowHead: View {
     }
 }
 
-private struct StaleMark: View {
+struct StaleMark: View {
     var body: some View {
         Text("Stale")
             .font(.system(size: 10, weight: .semibold))

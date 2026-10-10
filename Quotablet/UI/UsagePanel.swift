@@ -32,6 +32,7 @@ struct UsagePanel: View {
     @Bindable var store: UsageStore
     @State private var isChoosingCLI = false
     @State private var selectionError: String?
+    @State private var isDetailsExpanded = false
     @State private var isOKExpanded = true
     @State private var isAllQuotasExpanded = false
 
@@ -69,7 +70,8 @@ struct UsagePanel: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    statusGroups(now: now)
+                    providerFlower(now: now)
+                    details(now: now)
                     collectionContent(now: now)
                 }
                 .padding(.horizontal, 18)
@@ -125,15 +127,32 @@ struct UsagePanel: View {
     }
 
     @ViewBuilder
-    private func statusGroups(now: Date) -> some View {
+    private func providerFlower(now: Date) -> some View {
+        if let providers = store.snapshot?.providerUsage(now: now), !providers.isEmpty {
+            ProviderFlowerCard(providers: providers, logos: store.logos)
+        }
+    }
+
+    @ViewBuilder
+    private func details(now: Date) -> some View {
         if let overview = store.snapshot?.statusOverview(), !overview.isEmpty {
-            StatusGroups(
-                overview: overview,
-                isOKExpanded: $isOKExpanded,
-                now: now,
-                accountLabel: { accountLabel(for: $0, number: $1) },
-                isStale: { store.freshness(for: $0).isStale(at: now) }
-            )
+            VStack(alignment: .leading, spacing: 10) {
+                DisclosureToggle(isExpanded: $isDetailsExpanded, spokenLabel: overview.detailsSpokenLabel) {
+                    Text(overview.detailsLabel)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                if isDetailsExpanded {
+                    StatusGroups(
+                        overview: overview,
+                        isOKExpanded: $isOKExpanded,
+                        now: now,
+                        accountLabel: { accountLabel(for: $0, number: $1) },
+                        isStale: { store.freshness(for: $0).isStale(at: now) }
+                    )
+                }
+            }
+            .accessibilityIdentifier("quotablet.details")
         }
     }
 

@@ -69,7 +69,7 @@ final class UsageStore {
         guard let providers = snapshot?.providerUsage(now: now), !providers.isEmpty else {
             return "Quotablet. No quota is available for the menu bar. \(age)"
         }
-        return "\(providers.map(\.spokenSummary).joined(separator: "; ")). \(age)"
+        return "\(providers.spokenSummary). \(age)"
     }
 
     func freshness(for report: UsageReport?) -> UsageFreshness {

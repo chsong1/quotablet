@@ -400,14 +400,25 @@ struct ProviderUsage: Equatable, Sendable {
     // Any measured account's report is stale.
     let isStale: Bool
 
+    // For example "5 accounts" or "1 account". When only some accounts are measured, the count says how many the figure covers: "4 of 5 accounts".
+    var accountsPhrase: String {
+        guard accountCount != 1 else { return "1 account" }
+        let isPartial = measured.count > 0 && measured.count < accountCount
+        return "\(isPartial ? "\(measured.count) of \(accountCount)" : "\(accountCount)") accounts"
+    }
+
     // For example "Claude 79% used across 5 accounts" or "Grok 1% used, 1 account".
-    // When only some accounts are measured, the count says how many the figure covers.
     var spokenSummary: String {
         let name = ProviderRegistry.displayName(for: provider)
         let lead = usedFraction == nil ? "\(name) usage unknown" : "\(name) \(UsageFormatting.usedPercent(usedFraction)) used"
-        guard accountCount != 1 else { return "\(lead), 1 account" }
-        let isPartial = measured.count > 0 && measured.count < accountCount
-        return "\(lead) across \(isPartial ? "\(measured.count) of \(accountCount)" : "\(accountCount)") accounts"
+        return accountCount == 1 ? "\(lead), \(accountsPhrase)" : "\(lead) across \(accountsPhrase)"
+    }
+}
+
+extension Array where Element == ProviderUsage {
+    // Every provider's sentence in one, for the menu bar item and the panel's chart.
+    var spokenSummary: String {
+        map(\.spokenSummary).joined(separator: "; ")
     }
 }
 

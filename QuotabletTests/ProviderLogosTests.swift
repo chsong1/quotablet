@@ -53,6 +53,31 @@ private extension XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
     }
+
+    func render(_ image: NSImage, in appearance: NSAppearance.Name = .aqua) throws -> Raster {
+        let scale = 2
+        let width = Int((image.size.width * CGFloat(scale)).rounded(.up))
+        let height = Int(image.size.height) * scale
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+        try XCTUnwrap(NSAppearance(named: appearance)).performAsCurrentDrawingAppearance {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            image.draw(in: NSRect(origin: .zero, size: image.size))
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        let data = try XCTUnwrap(context.data)
+        let buffer = UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: context.bytesPerRow * height)
+        return Raster(bytes: Array(buffer), bytesPerRow: context.bytesPerRow, width: width, height: height)
+    }
 }
 
 final class LogoFileTests: XCTestCase {
@@ -177,6 +202,22 @@ final class ProviderLogoTests: XCTestCase {
         XCTAssertNil(ProviderLogo(contentsOf: directory.appendingPathComponent("broken.png")))
         XCTAssertNil(ProviderLogo(contentsOf: directory.appendingPathComponent("missing.png")))
         XCTAssertNotNil(ProviderLogo(contentsOf: directory.appendingPathComponent("real.png")))
+    }
+
+    func testTheArtworkImageIsTheTrimmedMarkAtTheRequestedHeightWithItsColorsUnchanged() throws {
+        let url = try makeTemporaryDirectory().appendingPathComponent("anthropic.png")
+        try SyntheticLogo(top: [200, 30, 90], bottom: [20, 140, 220]).writePNG(to: url)
+        let logo = try XCTUnwrap(ProviderLogo(contentsOf: url))
+
+        let artwork = logo.artwork(height: 14)
+        let raster = try render(artwork)
+
+        XCTAssertEqual(artwork.size, NSSize(width: 28, height: 14))
+        XCTAssertFalse(artwork.isTemplate)
+        XCTAssertEqual(raster.pixel(column: 28, row: 6), [200, 30, 90, 255])
+        XCTAssertEqual(raster.pixel(column: 28, row: 21), [20, 140, 220, 255])
+        XCTAssertEqual(raster.alpha(column: 4, row: 4), 1)
+        XCTAssertEqual(raster.alpha(column: 51, row: 23), 1)
     }
 }
 
@@ -476,30 +517,5 @@ final class ProviderMenuBarRendererTests: XCTestCase {
         var library = ProviderLogoLibrary(directoryURL: directory)
         _ = library.reloadIfChanged()
         return library.catalog
-    }
-
-    private func render(_ image: NSImage, in appearance: NSAppearance.Name = .aqua) throws -> Raster {
-        let scale = 2
-        let width = Int((image.size.width * CGFloat(scale)).rounded(.up))
-        let height = Int(image.size.height) * scale
-        let context = try XCTUnwrap(CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ))
-        context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
-        try XCTUnwrap(NSAppearance(named: appearance)).performAsCurrentDrawingAppearance {
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-            image.draw(in: NSRect(origin: .zero, size: image.size))
-            NSGraphicsContext.restoreGraphicsState()
-        }
-        let data = try XCTUnwrap(context.data)
-        let buffer = UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: context.bytesPerRow * height)
-        return Raster(bytes: Array(buffer), bytesPerRow: context.bytesPerRow, width: width, height: height)
     }
 }
