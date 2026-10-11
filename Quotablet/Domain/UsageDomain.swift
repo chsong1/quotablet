@@ -293,6 +293,40 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+// Why an account that OMP lists has no report on the panel.
+enum AccountProblemKind: String, Codable, Equatable, Sendable {
+    // OMP disabled the account's credentials, so the user must sign in again.
+    case disconnected
+    // The account is signed in, but OMP returned no usage report for it.
+    case noUsageData
+
+    var title: String {
+        switch self {
+        case .disconnected: "Disconnected account"
+        case .noUsageData: "Account without usage data"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .disconnected: "Sign in again in OMP"
+        case .noUsageData: "Signed in, but OMP returned no usage"
+        }
+    }
+}
+
+// An account that OMP lists without a report. It has no figure, so it counts toward no provider's figure.
+struct AccountProblem: Codable, Equatable, Sendable {
+    let provider: String
+    let kind: AccountProblemKind
+    // Follows a report's label and is shown only when identifiers are revealed.
+    let privateDisplayLabel: String?
+    // A short cause. Only a disconnected account has one.
+    let reason: String?
+    // When OMP disabled the account. Only a disconnected account has one.
+    let since: Date?
+}
+
 struct SelectedQuota: Equatable, Sendable {
     let report: UsageReport
     let quota: UsageQuota
@@ -365,7 +399,7 @@ extension ProviderAttention {
 
 struct ProviderUsage: Equatable, Sendable {
     let provider: String
-    // Reports of this provider, whether or not a figure could be read from them.
+    // Reports of this provider, whether or not a figure could be read from them. Zero when only problem accounts name the provider.
     let accountCount: Int
     // Each measured account's capacity quota, in report order.
     let measured: [SelectedQuota]
@@ -375,6 +409,13 @@ struct ProviderUsage: Equatable, Sendable {
     // and the provider's page marks that account.
     let isStale: Bool
     let attention: ProviderAttention
+    // Accounts OMP disabled, so the user must sign in again. A problem account has no report and adds nothing to the figure.
+    let disconnectedCount: Int
+    // Signed-in accounts for which OMP returned no report.
+    let noUsageDataCount: Int
+
+    // What the sign-in badge counts.
+    var problemCount: Int { disconnectedCount + noUsageDataCount }
 
     // For example "5 accounts" or "1 account". When only some accounts are measured, the count says how many the figure covers: "4 of 5 accounts".
     var accountsPhrase: String {
@@ -383,11 +424,32 @@ struct ProviderUsage: Equatable, Sendable {
         return "\(isPartial ? "\(measured.count) of \(accountCount)" : "\(accountCount)") accounts"
     }
 
-    // For example "Claude 79% used across 5 accounts" or "Grok 1% used, 1 account".
+    // For example "1 account needs sign-in" and "2 accounts without usage data". Empty when no account has a problem.
+    var problemPhrases: [String] {
+        func accounts(_ count: Int) -> String { "\(count) \(count == 1 ? "account" : "accounts")" }
+        var phrases: [String] = []
+        if disconnectedCount > 0 { phrases.append("\(accounts(disconnectedCount)) \(disconnectedCount == 1 ? "needs" : "need") sign-in") }
+        if noUsageDataCount > 0 { phrases.append("\(accounts(noUsageDataCount)) without usage data") }
+        return phrases
+    }
+
+    // What a list row says under the provider's name, such as "4 of 5 accounts, 1 account needs sign-in". With no report it says only the problems.
+    var accountsLine: String {
+        ((accountCount > 0 ? [accountsPhrase] : []) + problemPhrases).joined(separator: ", ")
+    }
+
+    // The one wording of a provider that the petal, the menu bar item and the provider page speak. For example
+    // "Claude 79% used across 5 accounts, 1 account needs sign-in", "Grok 1% used, 1 account", or "Claude, 5 accounts need sign-in" when no account has a report.
     var spokenSummary: String {
         let name = ProviderRegistry.displayName(for: provider)
         let lead = usedFraction == nil ? "\(name) usage unknown" : "\(name) \(UsageFormatting.usedPercent(usedFraction)) used"
-        return accountCount == 1 ? "\(lead), \(accountsPhrase)" : "\(lead) across \(accountsPhrase)"
+        let accounts: String
+        switch accountCount {
+        case 0: accounts = name
+        case 1: accounts = "\(lead), \(accountsPhrase)"
+        default: accounts = "\(lead) across \(accountsPhrase)"
+        }
+        return ([accounts] + problemPhrases).joined(separator: ", ")
     }
 
     // What a petal and a list row speak, such as "Claude 79% used across 5 accounts, 1 exhausted, 2 near limit, stale".
@@ -408,16 +470,21 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
     let generatedAt: Date
     let receivedAt: Date
     let reports: [UsageReport]
+    // Accounts OMP lists without a report, disabled ones first and each kind in the order OMP listed it.
+    // A snapshot saved before this list existed has none.
+    let accountProblems: [AccountProblem]
 
     init(
         generatedAt: Date,
         receivedAt: Date = Date(),
         revision: UUID = UUID(),
-        reportDrafts: [UsageReportDraft]
+        reportDrafts: [UsageReportDraft],
+        accountProblems: [AccountProblem] = []
     ) {
         self.revision = revision
         self.generatedAt = generatedAt
         self.receivedAt = receivedAt
+        self.accountProblems = accountProblems
 
         let stableCandidates = reportDrafts.map { draft in
             draft.sourceAccount?.stableIdentity(provider: draft.provider)
@@ -457,6 +524,19 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
         }
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case revision, generatedAt, receivedAt, reports, accountProblems
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        revision = try container.decode(UUID.self, forKey: .revision)
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        receivedAt = try container.decode(Date.self, forKey: .receivedAt)
+        reports = try container.decode([UsageReport].self, forKey: .reports)
+        accountProblems = try container.decodeIfPresent([AccountProblem].self, forKey: .accountProblems) ?? []
+    }
+
     private static func isStablyBefore(_ left: SelectedQuota, _ right: SelectedQuota) -> Bool {
         if left.report.provider != right.report.provider {
             return left.report.provider.localizedStandardCompare(right.report.provider) == .orderedAscending
@@ -480,10 +560,25 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
 }
 
 extension UsageSnapshot {
-    // One entry for each provider that has a report, in the registry's order.
+    // Nothing to show: no report and no problem account.
+    var isEmpty: Bool { reports.isEmpty && accountProblems.isEmpty }
+
+    // A provider has a page when a report or a problem account names it.
+    func hasProvider(_ provider: String) -> Bool {
+        reports.contains { $0.provider == provider } || accountProblems.contains { $0.provider == provider }
+    }
+
+    // When the oldest report was fetched, which makes it the oldest figure the panel shows. Nil when no report says.
+    var oldestReportFetchedAt: Date? { reports.compactMap(\.fetchedAt).min() }
+
+    // One entry for each provider that has a report or a problem account, in the registry's order.
     func providerUsage(now: Date) -> [ProviderUsage] {
-        Dictionary(grouping: reports, by: \.provider)
-            .map { provider, accounts in
+        let accountsByProvider = Dictionary(grouping: reports, by: \.provider)
+        let problemsByProvider = Dictionary(grouping: accountProblems, by: \.provider)
+        return Set(accountsByProvider.keys).union(problemsByProvider.keys)
+            .map { provider in
+                let accounts = accountsByProvider[provider] ?? []
+                let problems = problemsByProvider[provider] ?? []
                 let measured = accounts.compactMap(capacityQuota(of:))
                 return ProviderUsage(
                     provider: provider,
@@ -491,7 +586,9 @@ extension UsageSnapshot {
                     measured: measured,
                     usedFraction: Self.combinedUsedFraction(of: measured.compactMap(\.quota.amount)),
                     isStale: !measured.isEmpty && measured.allSatisfy { $0.report.isStale(at: now) },
-                    attention: ProviderAttention(accountUrgencies: accounts.map(\.topUrgency))
+                    attention: ProviderAttention(accountUrgencies: accounts.map(\.topUrgency)),
+                    disconnectedCount: problems.filter { $0.kind == .disconnected }.count,
+                    noUsageDataCount: problems.filter { $0.kind == .noUsageData }.count
                 )
             }
             .sorted { ProviderRegistry.ranksBefore($0.provider, $1.provider) }
@@ -547,7 +644,7 @@ enum PanelRoute: Equatable, Sendable {
     // A refresh can drop the provider whose page is open. That page has nothing left to show, so the route returns to the flower.
     func resolved(in snapshot: UsageSnapshot?) -> PanelRoute {
         guard case .provider(let id) = self else { return self }
-        return snapshot?.reports.contains { $0.provider == id } == true ? self : .flower
+        return snapshot?.hasProvider(id) == true ? self : .flower
     }
 }
 
@@ -614,6 +711,14 @@ struct AccountDetail: Equatable, Sendable {
     var urgency: QuotaUrgency? { report.topUrgency }
     var status: AccountStatus { report.accountStatus }
 
+    // Credits that reset a quota, as the account's capsule counts them. Nil when OMP reports none.
+    var resetCredits: Int? { report.resetCredits.flatMap { $0 > 0 ? $0 : nil } }
+
+    // For example "2 reset credits available".
+    var resetCreditsPhrase: String? {
+        resetCredits.map { "\($0) reset credit\($0 == 1 ? "" : "s") available" }
+    }
+
     // The used share of the window closest to running out. Nil when no window has a figure.
     var mostUsedFraction: Double? { windows.compactMap(\.usedFraction).max() }
 
@@ -643,7 +748,8 @@ struct AccountDetail: Equatable, Sendable {
         return ascending ? left < right : left > right
     }
 
-    // For example "Account 2, near limit, 7 day 91% used, resets in 3 days 23 hours; 5 hour 0% used". Windows that need attention come first.
+    // For example "Account 2, near limit, 7 day 91% used, resets in 3 days 23 hours; 5 hour 0% used, 2 reset credits available".
+    // Windows that need attention come first.
     func accessibilityLabel(accountLabel: String, now: Date) -> String {
         var parts = [accountLabel]
         if let urgency { parts.append(urgency.label.lowercased()) }
@@ -653,15 +759,45 @@ struct AccountDetail: Equatable, Sendable {
             parts.append((leading + rest).map { $0.spokenSummary(now: now) }.joined(separator: "; "))
         }
         if isStale { parts.append("stale") }
+        if let resetCreditsPhrase { parts.append(resetCreditsPhrase) }
         return parts.joined(separator: ", ")
     }
 }
 
-// One provider's page: the provider's figures and each of its accounts.
+// One account problem on its provider's page: a row with no windows and no bar.
+struct ProblemDetail: Equatable, Sendable {
+    var hint: String { problem.kind.hint }
+
+    let problem: AccountProblem
+    // Order among the provider's problems as OMP listed them, counted from 1.
+    let number: Int
+    // Position among the provider's problems of the same kind, counted from 1. Nil for the only one of its kind, which needs no number.
+    let kindNumber: Int?
+
+    // The kind's name, numbered when the provider has several of the kind. When identifiers are revealed, the account's own label replaces it.
+    func label(revealing: Bool) -> String {
+        if revealing, let own = problem.privateDisplayLabel { return own }
+        return kindNumber.map { "\(problem.kind.title) \($0)" } ?? problem.kind.title
+    }
+
+    // For example "since 3h 12m ago". Nil when OMP does not say when the account was disabled.
+    func sinceText(now: Date) -> String? {
+        problem.since.map { "since \(UsageFormatting.agoPhrase(now.timeIntervalSince($0)))" }
+    }
+
+    // For example "Disconnected account 2, Refresh token not found or invalid, since 3h 12m ago, Sign in again in OMP".
+    func accessibilityLabel(label: String, now: Date) -> String {
+        [label, problem.reason, sinceText(now: now), hint].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+// One provider's page: the provider's figures, each of its accounts, and each account that has a problem.
 struct ProviderDetail: Equatable, Sendable {
     let usage: ProviderUsage
     // In account-number order, so an account's petal keeps its place from one refresh to the next.
     let accounts: [AccountDetail]
+    // In the order OMP listed them. A problem account has no figure, so its row follows the account rows.
+    let problems: [ProblemDetail]
 
     // Most urgent first, which is the order of the rows.
     var accountsByUrgency: [AccountDetail] { accounts.sorted(by: AccountDetail.ranksBefore) }
@@ -679,7 +815,7 @@ struct ProviderDetail: Equatable, Sendable {
 }
 
 extension UsageSnapshot {
-    // One provider's accounts as its page shows them. Nil when no report names the provider.
+    // One provider's accounts as its page shows them. Nil when no report and no problem account names the provider.
     func providerDetail(of provider: String, now: Date) -> ProviderDetail? {
         guard let usage = providerUsage(now: now).first(where: { $0.provider == provider }) else { return nil }
         let capacity = Dictionary(uniqueKeysWithValues: usage.measured.map { ($0.report.id, $0.quota) })
@@ -695,13 +831,27 @@ extension UsageSnapshot {
                     windows: Self.windowEntries(of: report)
                 )
             }
-        return ProviderDetail(usage: usage, accounts: accounts)
+        return ProviderDetail(usage: usage, accounts: accounts, problems: problemDetails(of: provider))
     }
 
     private static func windowEntries(of report: UsageReport) -> [WindowEntry] {
         let names = UsageFormatting.windowNames(for: report.quotas, provider: report.provider)
         return zip(report.quotas, names).map { quota, name in
             WindowEntry(name: name, usedFraction: quota.usedShare, urgency: quota.urgency, resetsAt: quota.resetsAt)
+        }
+    }
+
+    private func problemDetails(of provider: String) -> [ProblemDetail] {
+        let problems = accountProblems.filter { $0.provider == provider }
+        let totals = Dictionary(grouping: problems, by: \.kind).mapValues(\.count)
+        var seen: [AccountProblemKind: Int] = [:]
+        return problems.enumerated().map { offset, problem in
+            seen[problem.kind, default: 0] += 1
+            return ProblemDetail(
+                problem: problem,
+                number: offset + 1,
+                kindNumber: totals[problem.kind, default: 0] > 1 ? seen[problem.kind] : nil
+            )
         }
     }
 }
@@ -749,6 +899,28 @@ struct UsageFreshness: Equatable, Sendable {
         guard let fetchedAt else { return nil }
         let age = max(0, now.timeIntervalSince(fetchedAt))
         return age.isFinite ? age : nil
+    }
+}
+
+// What the panel header's second line says about the data on screen.
+enum CollectionStatus: Equatable, Sendable {
+    case noSnapshot(UsageRefreshStatus)
+    // `dataDate` is when the snapshot's oldest figure was fetched.
+    case snapshot(UsageSnapshotOrigin, dataDate: Date, refresh: UsageRefreshStatus)
+
+    func text(now: Date) -> String {
+        switch self {
+        case .noSnapshot(.refreshing): return "Refreshing OMP"
+        case .noSnapshot(.failed): return "Refresh failed"
+        case .noSnapshot(.idle): return "Waiting for OMP"
+        case .snapshot(let origin, let dataDate, let refresh):
+            let age = UsageFormatting.agoPhrase(now.timeIntervalSince(dataDate))
+            switch refresh {
+            case .refreshing: return "Refreshing · updated \(age)"
+            case .failed: return "Refresh failed · data from \(age)"
+            case .idle: return origin == .cached ? "Saved snapshot · updated \(age)" : "Updated \(age)"
+            }
+        }
     }
 }
 
@@ -906,9 +1078,14 @@ enum UsageFormatting {
         let minutes = Int(seconds / 60)
         if minutes < 60 { return "\(minutes)m" }
         let hours = minutes / 60
-        if hours < 24 { return "\(hours)h \(minutes % 60)m" }
+        if hours < 24 { return minutes % 60 == 0 ? "\(hours)h" : "\(hours)h \(minutes % 60)m" }
         let days = hours / 24
-        return "\(days)d \(hours % 24)h"
+        return hours % 24 == 0 ? "\(days)d" : "\(days)d \(hours % 24)h"
+    }
+
+    // For example "just now" and "3m ago". An age under a minute reads "just now", and any other age reuses `ageDescription`.
+    static func agoPhrase(_ seconds: TimeInterval) -> String {
+        seconds < 60 ? "just now" : "\(ageDescription(seconds)) ago"
     }
 
     private static func formatNumber(_ value: Double) -> String {

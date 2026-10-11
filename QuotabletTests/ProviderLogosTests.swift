@@ -438,6 +438,37 @@ final class ProviderMenuBarRendererTests: XCTestCase {
         XCTAssertEqual(raster.inkRuns.count, 2)
     }
 
+    func testAProblemAccountDrawsARedDotAfterTheTextAndLeavesTheLogoAndTheTextUntouched() throws {
+        let logos = try catalog(["anthropic.png": darkLogo])
+        let clean = ProviderMenuBarRenderer.image(for: [usage("anthropic", 0.5)], logos: logos)
+        let flagged = ProviderMenuBarRenderer.image(for: [usage("anthropic", 0.5, disconnected: 1)], logos: logos)
+
+        XCTAssertEqual(flagged.size.width - clean.size.width, 7)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let cleanRaster = try render(clean, in: appearance)
+            let flaggedRaster = try render(flagged, in: appearance)
+            let gap = cleanRaster.width..<cleanRaster.width + 6
+            let center = flaggedRaster.pixel(column: cleanRaster.width + 10, row: 16)
+
+            XCTAssertEqual(flaggedRaster.pixels(columns: 0..<cleanRaster.width), cleanRaster.pixels(columns: 0..<cleanRaster.width), appearance.rawValue)
+            XCTAssertEqual(flaggedRaster.peakAlpha(columns: gap), 0, appearance.rawValue)
+            XCTAssertGreaterThan(center[0], 200, appearance.rawValue)
+            XCTAssertLessThan(center[1], 110, appearance.rawValue)
+            XCTAssertLessThan(center[2], 110, appearance.rawValue)
+            XCTAssertEqual(center[3], 255, appearance.rawValue)
+        }
+    }
+
+    func testAProviderWithNoReportDrawsItsLogoADashAndTheDot() throws {
+        let logos = try catalog(["anthropic.png": darkLogo])
+        let image = ProviderMenuBarRenderer.image(for: [usage("anthropic", nil, accounts: 0, disconnected: 5)], logos: logos)
+
+        let raster = try render(image)
+
+        XCTAssertEqual(raster.inkRuns.count, 3)
+        XCTAssertEqual(raster.inkRuns.first, 0..<60)
+    }
+
     func testTextAndBadgeAreDrawnInTheLabelColorOfTheAppearance() throws {
         let image = ProviderMenuBarRenderer.image(for: [usage("ibm", 1)], logos: .empty)
 
@@ -537,14 +568,16 @@ final class ProviderMenuBarRendererTests: XCTestCase {
         XCTAssertLessThan(allStale.peakAlpha(columns: text), fresh.peakAlpha(columns: text) - 0.2)
     }
 
-    private func usage(_ provider: String, _ used: Double?, isStale: Bool = false) -> ProviderUsage {
+    private func usage(_ provider: String, _ used: Double?, isStale: Bool = false, accounts: Int = 1, disconnected: Int = 0) -> ProviderUsage {
         ProviderUsage(
             provider: provider,
-            accountCount: 1,
+            accountCount: accounts,
             measured: [],
             usedFraction: used,
             isStale: isStale,
-            attention: ProviderAttention(exhaustedAccounts: 0, nearLimitAccounts: 0)
+            attention: ProviderAttention(exhaustedAccounts: 0, nearLimitAccounts: 0),
+            disconnectedCount: disconnected,
+            noUsageDataCount: 0
         )
     }
 

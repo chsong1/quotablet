@@ -101,7 +101,9 @@ final class ProviderFlowerTests: XCTestCase {
                 measured: [],
                 usedFraction: 0.68,
                 isStale: false,
-                attention: ProviderAttention(exhaustedAccounts: exhausted, nearLimitAccounts: nearLimit)
+                attention: ProviderAttention(exhaustedAccounts: exhausted, nearLimitAccounts: nearLimit),
+                disconnectedCount: 0,
+                noUsageDataCount: 0
             ).petalAccessibilityLabel
         }
 
@@ -115,6 +117,95 @@ final class ProviderFlowerTests: XCTestCase {
             providers().spokenSummary,
             "Claude 79% used across 5 accounts; Codex 94% used across 3 accounts; Grok 1% used, 1 account; Cursor 100% used, 1 account"
         )
+    }
+
+    func testAProviderWithOnlyProblemAccountsGetsAnOutlinePetalWithADashAndASignInBadge() throws {
+        let snapshot = UsageSnapshot(
+            generatedAt: RealisticFixture.fetchedAt,
+            reportDrafts: [],
+            accountProblems: Array(repeating: RealisticFixture.problem(), count: 5)
+        )
+
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: RealisticFixture.fetchedAt).first)
+        let petal = Petal(usage)
+
+        XCTAssertNil(petal.usedFraction)
+        XCTAssertEqual(petal.text, "–")
+        XCTAssertNil(petal.badge)
+        XCTAssertEqual(petal.signInCount, 5)
+        XCTAssertEqual(usage.usedText, "—")
+        XCTAssertEqual(usage.petalAccessibilityLabel, "Claude, 5 accounts need sign-in")
+    }
+
+    func testAPetalCountsEachOfItsProvidersAccountsThatNeedSignInAndAnAccountPetalCountsNone() throws {
+        let problems = [
+            RealisticFixture.problem(.disconnected),
+            RealisticFixture.problem(.disconnected),
+            RealisticFixture.problem(.noUsageData),
+            RealisticFixture.problem(.noUsageData, provider: "cursor")
+        ]
+
+        let petals = providers(accountProblems: problems).map(Petal.init)
+        let detail = try XCTUnwrap(RealisticFixture.snapshot(accountProblems: problems).providerDetail(of: "anthropic", now: RealisticFixture.fetchedAt))
+
+        XCTAssertEqual(petals.map(\.signInCount), [3, 0, 0, 1])
+        XCTAssertEqual(petals.map(\.text), ["79%", "94%", "1%", "100%"])
+        XCTAssertEqual(detail.accounts.map(Petal.init).map(\.signInCount), [0, 0, 0, 0, 0])
+    }
+
+    func testTheSpokenSummaryAppendsEachProblemCountAfterTheFigureAndTheAccounts() {
+        func summary(accounts: Int, used: Double?, disconnected: Int = 0, noUsageData: Int = 0) -> String {
+            ProviderUsage(
+                provider: "anthropic",
+                accountCount: accounts,
+                measured: [],
+                usedFraction: used,
+                isStale: false,
+                attention: ProviderAttention(exhaustedAccounts: 0, nearLimitAccounts: 0),
+                disconnectedCount: disconnected,
+                noUsageDataCount: noUsageData
+            ).spokenSummary
+        }
+
+        XCTAssertEqual(summary(accounts: 4, used: 0.77), "Claude 77% used across 4 accounts")
+        XCTAssertEqual(summary(accounts: 4, used: 0.77, disconnected: 1), "Claude 77% used across 4 accounts, 1 account needs sign-in")
+        XCTAssertEqual(summary(accounts: 4, used: 0.77, disconnected: 5), "Claude 77% used across 4 accounts, 5 accounts need sign-in")
+        XCTAssertEqual(summary(accounts: 2, used: nil), "Claude usage unknown across 2 accounts")
+        XCTAssertEqual(summary(accounts: 2, used: nil, disconnected: 1), "Claude usage unknown across 2 accounts, 1 account needs sign-in")
+        XCTAssertEqual(summary(accounts: 2, used: nil, disconnected: 5), "Claude usage unknown across 2 accounts, 5 accounts need sign-in")
+        XCTAssertEqual(summary(accounts: 0, used: nil, disconnected: 1), "Claude, 1 account needs sign-in")
+        XCTAssertEqual(summary(accounts: 0, used: nil, disconnected: 5), "Claude, 5 accounts need sign-in")
+        XCTAssertEqual(
+            summary(accounts: 1, used: 0.01, disconnected: 1, noUsageData: 2),
+            "Claude 1% used, 1 account, 1 account needs sign-in, 2 accounts without usage data"
+        )
+    }
+
+    func testThePetalTheMenuBarItemAndTheProviderPageShareOneProblemWording() throws {
+        let problems = Array(repeating: RealisticFixture.problem(), count: 5)
+        let usage = providers(accountProblems: problems)
+        let detail = try XCTUnwrap(RealisticFixture.snapshot(accountProblems: problems).providerDetail(of: "anthropic", now: RealisticFixture.fetchedAt))
+
+        XCTAssertEqual(usage.first?.petalAccessibilityLabel, "Claude 79% used across 5 accounts, 5 accounts need sign-in, 5 exhausted")
+        XCTAssertEqual(
+            usage.spokenSummary,
+            "Claude 79% used across 5 accounts, 5 accounts need sign-in; Codex 94% used across 3 accounts; Grok 1% used, 1 account; Cursor 100% used, 1 account"
+        )
+        XCTAssertEqual(detail.usage.spokenSummary, "Claude 79% used across 5 accounts, 5 accounts need sign-in")
+    }
+
+    func testAListRowSaysItsAccountsThenItsProblemsOrOnlyTheProblemsWhenNoAccountHasAReport() throws {
+        let withReports = providers(unmeasuredClaudeAccounts: 1, accountProblems: [RealisticFixture.problem()])
+        let onlyProblems = try XCTUnwrap(
+            UsageSnapshot(
+                generatedAt: RealisticFixture.fetchedAt,
+                reportDrafts: [],
+                accountProblems: [RealisticFixture.problem(), RealisticFixture.problem(), RealisticFixture.problem(.noUsageData)]
+            ).providerUsage(now: RealisticFixture.fetchedAt).first
+        )
+
+        XCTAssertEqual(withReports.map(\.accountsLine), ["4 of 5 accounts, 1 account needs sign-in", "3 accounts", "1 account", "1 account"])
+        XCTAssertEqual(onlyProblems.accountsLine, "2 accounts need sign-in, 1 account without usage data")
     }
 
     func testALogoKeepsItsHeightAndShrinksOnlyWhenItIsWiderThanTheLimit() {
@@ -139,8 +230,12 @@ final class ProviderFlowerTests: XCTestCase {
         }
     }
 
-    private func providers(unmeasuredClaudeAccounts: Int = 0, afterSeconds: TimeInterval = 0) -> [ProviderUsage] {
-        RealisticFixture.snapshot(unmeasuredClaudeAccounts: unmeasuredClaudeAccounts)
+    private func providers(
+        unmeasuredClaudeAccounts: Int = 0,
+        afterSeconds: TimeInterval = 0,
+        accountProblems: [AccountProblem] = []
+    ) -> [ProviderUsage] {
+        RealisticFixture.snapshot(unmeasuredClaudeAccounts: unmeasuredClaudeAccounts, accountProblems: accountProblems)
             .providerUsage(now: RealisticFixture.fetchedAt.addingTimeInterval(afterSeconds))
     }
 
@@ -334,20 +429,44 @@ final class PetalGeometryTests: XCTestCase {
         XCTAssertTrue(path.contains(point(radius: 50, degrees: -34.5)))
     }
 
-    func testAxisPointsLieOnTheirPetalAndItsBadgeSitsInsideNearTheTip() {
+    func testAxisPointsLieOnTheirPetalAndItsBadgesSitInsideNearTheTip() {
         for count in FlowerLayout.petalRange {
             for index in 0..<count {
                 let petal = PetalGeometry(petalCount: count, index: index, outerRadius: 75)
                 let path = petal.path(in: center)
                 let onAxis = petal.axisPoint(atRadius: 65.5, in: center)
                 let badge = petal.badgeCenter(in: center)
+                let signIn = petal.signInBadgeCenter(in: center)
                 let badgeDistance = hypot(badge.x - center.x, badge.y - center.y)
+                let signInDistance = hypot(signIn.x - center.x, signIn.y - center.y)
 
                 XCTAssertEqual(hypot(onAxis.x - center.x, onAxis.y - center.y), 65.5, accuracy: 1e-6)
                 XCTAssertTrue(path.contains(onAxis), "\(count) petals, index \(index)")
                 XCTAssertGreaterThan(badgeDistance, 75 * 0.8)
                 XCTAssertLessThan(badgeDistance, 75)
                 XCTAssertTrue(path.contains(badge), "badge of \(count) petals, index \(index)")
+                XCTAssertEqual(signInDistance, badgeDistance, accuracy: 1e-9)
+                XCTAssertTrue(path.contains(signIn), "sign-in badge of \(count) petals, index \(index)")
+            }
+        }
+    }
+
+    func testTheSignInBadgeMirrorsTheStatusBadgeAcrossTheAxisAndKeepsClearOfIt() {
+        for count in FlowerLayout.petalRange {
+            for index in 0..<count {
+                let petal = PetalGeometry(petalCount: count, index: index, outerRadius: 150)
+                let status = petal.badgeCenter(in: center)
+                let signIn = petal.signInBadgeCenter(in: center)
+                let onAxis = petal.axisPoint(atRadius: 140, in: center)
+
+                // The widest badge is about 42 pt across, so centers more than 50 pt apart leave a gap between the two.
+                XCTAssertGreaterThan(hypot(status.x - signIn.x, status.y - signIn.y), 50, "\(count) petals, index \(index)")
+                XCTAssertEqual(
+                    hypot(status.x - onAxis.x, status.y - onAxis.y),
+                    hypot(signIn.x - onAxis.x, signIn.y - onAxis.y),
+                    accuracy: 1e-9,
+                    "\(count) petals, index \(index)"
+                )
             }
         }
     }

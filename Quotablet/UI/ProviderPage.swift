@@ -130,6 +130,7 @@ struct ProviderPage: View {
                 .padding(.horizontal, 11)
                 .frame(height: 28)
                 .background(Capsule().fill(color))
+                .accessibilityLabel(detail.usage.spokenSummary)
         }
         .padding(.leading, PageMetrics.inset - 6)
         .padding(.trailing, PageMetrics.inset)
@@ -195,6 +196,7 @@ struct ProviderPage: View {
                             now: now
                         )
                     }
+                    problemRows
                 }
             }
         }
@@ -207,9 +209,17 @@ struct ProviderPage: View {
                 ForEach(detail.accountsByUrgency, id: \.number) { account in
                     AccountCard(account: account, color: chipColor(for: account), label: accountLabel(account), now: now)
                 }
+                problemRows
             }
             .padding(.horizontal, PageMetrics.inset)
             .padding(.vertical, 8)
+        }
+    }
+
+    // An account OMP lists without a report has no petal and no figure, so its row follows the accounts.
+    private var problemRows: some View {
+        ForEach(detail.problems, id: \.number) { problem in
+            ProblemRow(detail: problem, label: problem.label(revealing: showsAccountLabels), now: now)
         }
     }
 }
@@ -288,6 +298,79 @@ private struct StatusGlyph: View {
     }
 }
 
+// The reset credits an account has, counted beside the arrow that resets a quota. The row's label speaks them, so the capsule is only seen.
+private struct ResetCreditsCapsule: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 8, weight: .bold))
+            Text("\(count)")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1.5)
+        .background(Capsule().fill(Color.primary.opacity(0.08)))
+        .fixedSize()
+    }
+}
+
+// An exclamation mark in place of a number, because the account has no petal and no figure.
+private struct ProblemChip: View {
+    var body: some View {
+        Text("!")
+            .font(.system(size: 12, weight: .heavy, design: .rounded))
+            .foregroundStyle(PetalLook.inkOnColor)
+            .frame(width: PageMetrics.chip, height: PageMetrics.chip)
+            .background(Circle().fill(Color(nsColor: .systemGray)))
+    }
+}
+
+// An account OMP lists without a report. It has no windows and no bar, only what is wrong and what to do about it.
+private struct ProblemRow: View {
+    let detail: ProblemDetail
+    let label: String
+    let now: Date
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ProblemChip()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let cause {
+                    Text(cause)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Text(detail.hint)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, PageMetrics.rowPadding)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .statusCard(.ok, radius: 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(detail.accessibilityLabel(label: label, now: now))
+        .accessibilityIdentifier("quotablet.problem-row.\(detail.number)")
+    }
+
+    // The reason and the time, such as "Refresh token not found or invalid · since 3h 12m ago". Nil when OMP gives neither.
+    private var cause: String? {
+        let parts = [detail.problem.reason, detail.sinceText(now: now)].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
 private struct CountdownTag: View {
     let text: String
     let ink: Color
@@ -352,6 +435,9 @@ private struct AccountRow: View {
                     StatusGlyph(urgency: urgency)
                 }
             }
+            if let credits = account.resetCredits {
+                ResetCreditsCapsule(count: credits)
+            }
             if account.isStale {
                 StaleMark()
             }
@@ -406,6 +492,9 @@ private struct AccountCard: View {
                     .truncationMode(.middle)
                 if let urgency = account.urgency {
                     StatusGlyph(urgency: urgency)
+                }
+                if let credits = account.resetCredits {
+                    ResetCreditsCapsule(count: credits)
                 }
                 Spacer(minLength: 8)
                 if account.isStale {

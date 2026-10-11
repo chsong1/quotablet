@@ -299,14 +299,62 @@ final class UsageDomainTests: XCTestCase {
         )
     }
 
-    func testOnlyProvidersWithAReportAreListed() {
+    func testOnlyProvidersWithAReportOrAProblemAccountAreListed() {
         let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
             report(provider: "cursor", accountID: "c"),
             report(provider: "anthropic", accountID: "a")
+        ], accountProblems: [RealisticFixture.problem(provider: "xai-oauth")])
+
+        XCTAssertEqual(snapshot.providerUsage(now: timestamp).map(\.provider), ["anthropic", "xai-oauth", "cursor"])
+        XCTAssertEqual(UsageSnapshot(generatedAt: timestamp, reportDrafts: []).providerUsage(now: timestamp), [])
+    }
+
+    func testAProviderWithReportsAndProblemAccountsKeepsItsFigureAndCountsEachKindOfProblem() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [quota(id: "weekly", windowID: "7d", label: "Claude 7 Day", remainingPercent: 20)]),
+            report(accountID: "claude-b", quotas: [quota(id: "weekly", windowID: "7d", label: "Claude 7 Day", remainingPercent: 40)])
+        ], accountProblems: [
+            RealisticFixture.problem(.disconnected),
+            RealisticFixture.problem(.noUsageData),
+            RealisticFixture.problem(.noUsageData),
+            RealisticFixture.problem(.disconnected, provider: "openai-codex")
         ])
 
-        XCTAssertEqual(snapshot.providerUsage(now: timestamp).map(\.provider), ["anthropic", "cursor"])
-        XCTAssertEqual(UsageSnapshot(generatedAt: timestamp, reportDrafts: []).providerUsage(now: timestamp), [])
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: timestamp).first)
+
+        XCTAssertEqual(usage.provider, "anthropic")
+        XCTAssertEqual(usage.accountCount, 2)
+        XCTAssertEqual(try XCTUnwrap(usage.usedFraction), 0.7, accuracy: 0.0001)
+        XCTAssertEqual(usage.measured.map(\.report.sourceAccount?.accountID), ["claude-a", "claude-b"])
+        XCTAssertEqual(usage.disconnectedCount, 1)
+        XCTAssertEqual(usage.noUsageDataCount, 2)
+        XCTAssertEqual(usage.problemCount, 3)
+        XCTAssertEqual(usage.spokenSummary, "Claude 70% used across 2 accounts, 1 account needs sign-in, 2 accounts without usage data")
+    }
+
+    func testAProviderWithOnlyProblemAccountsHasNoFigureAndKeepsItsPlaceInTheRegistryOrder() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "cursor", accountID: "cursor-a"),
+            report(provider: "openai-codex", accountID: "codex-a")
+        ], accountProblems: [
+            RealisticFixture.problem(provider: "xai-oauth"),
+            RealisticFixture.problem(provider: "anthropic"),
+            RealisticFixture.problem(provider: "anthropic"),
+            RealisticFixture.problem(.noUsageData, provider: "mistral")
+        ])
+
+        let providers = snapshot.providerUsage(now: timestamp)
+        let claude = try XCTUnwrap(providers.first)
+
+        XCTAssertEqual(providers.map(\.provider), ["anthropic", "openai-codex", "xai-oauth", "cursor", "mistral"])
+        XCTAssertEqual(providers.map(\.accountCount), [0, 1, 0, 1, 0])
+        XCTAssertEqual(providers.map(\.problemCount), [2, 0, 1, 0, 1])
+        XCTAssertTrue(claude.measured.isEmpty)
+        XCTAssertNil(claude.usedFraction)
+        XCTAssertFalse(claude.isStale)
+        XCTAssertEqual(claude.attention, ProviderAttention(exhaustedAccounts: 0, nearLimitAccounts: 0))
+        XCTAssertEqual(claude.spokenSummary, "Claude, 2 accounts need sign-in")
+        XCTAssertEqual(providers.last?.spokenSummary, "mistral, 1 account without usage data")
     }
 
     func testAccountsAreNumberedFromOneAmongTheirProvidersReportsInReportOrder() throws {
@@ -707,11 +755,126 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertEqual(PanelRoute.flower.resolved(in: codexOnly), .flower)
     }
 
-    func testNoProviderPageExistsForAProviderWithoutAReport() {
-        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(accountID: "claude-a")])
+    func testAPageStaysOpenForAProviderThatOnlyAProblemAccountNamesAndSuchASnapshotIsNotEmpty() {
+        let problemsOnly = UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(provider: "openai-codex", accountID: "codex-a")], accountProblems: [RealisticFixture.problem()])
+
+        XCTAssertEqual(PanelRoute.provider("anthropic").resolved(in: problemsOnly), .provider("anthropic"))
+        XCTAssertEqual(PanelRoute.provider("cursor").resolved(in: problemsOnly), .flower)
+        XCTAssertTrue(UsageSnapshot(generatedAt: timestamp, reportDrafts: []).isEmpty)
+        XCTAssertFalse(UsageSnapshot(generatedAt: timestamp, reportDrafts: [], accountProblems: [RealisticFixture.problem()]).isEmpty)
+        XCTAssertFalse(UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(accountID: "claude-a")]).isEmpty)
+    }
+
+    func testNoProviderPageExistsForAProviderThatNoReportAndNoProblemAccountNames() {
+        let snapshot = UsageSnapshot(
+            generatedAt: timestamp,
+            reportDrafts: [report(accountID: "claude-a")],
+            accountProblems: [RealisticFixture.problem(provider: "xai-oauth")]
+        )
 
         XCTAssertNotNil(snapshot.providerDetail(of: "anthropic", now: timestamp))
+        XCTAssertNotNil(snapshot.providerDetail(of: "xai-oauth", now: timestamp))
         XCTAssertNil(snapshot.providerDetail(of: "openai-codex", now: timestamp))
+    }
+
+    func testAProviderPageListsEachProblemAccountInOMPOrderAndNumbersThemWithinTheirKind() throws {
+        let since = timestamp.addingTimeInterval(-(3 * 3_600 + 12 * 60))
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [], accountProblems: [
+            RealisticFixture.problem(.disconnected, reason: "Refresh token not found or invalid", since: since),
+            RealisticFixture.problem(.noUsageData, label: "second@example.invalid"),
+            RealisticFixture.problem(.disconnected, label: "third@example.invalid"),
+            RealisticFixture.problem(provider: "openai-codex")
+        ])
+
+        let detail = try XCTUnwrap(snapshot.providerDetail(of: "anthropic", now: timestamp))
+        let labels = detail.problems.map { $0.label(revealing: false) }
+
+        XCTAssertTrue(detail.accounts.isEmpty)
+        XCTAssertEqual(detail.usage.usedText, "—")
+        XCTAssertEqual(detail.problems.map(\.number), [1, 2, 3])
+        XCTAssertEqual(labels, ["Disconnected account 1", "Account without usage data", "Disconnected account 2"])
+        XCTAssertEqual(detail.problems.map { $0.label(revealing: true) }, ["Disconnected account 1", "second@example.invalid", "third@example.invalid"])
+        XCTAssertEqual(detail.problems.map { $0.sinceText(now: timestamp) }, ["since 3h 12m ago", nil, nil])
+        XCTAssertEqual(
+            detail.problems[0].accessibilityLabel(label: labels[0], now: timestamp),
+            "Disconnected account 1, Refresh token not found or invalid, since 3h 12m ago, Sign in again in OMP"
+        )
+        XCTAssertEqual(
+            detail.problems[1].accessibilityLabel(label: labels[1], now: timestamp),
+            "Account without usage data, Signed in, but OMP returned no usage"
+        )
+        XCTAssertEqual(
+            detail.problems[2].accessibilityLabel(label: "third@example.invalid", now: timestamp),
+            "third@example.invalid, Sign in again in OMP"
+        )
+    }
+
+    func testAProblemRowSaysJustNowWhenOMPDisabledTheAccountUnderAMinuteAgo() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [], accountProblems: [
+            RealisticFixture.problem(since: timestamp.addingTimeInterval(-20)),
+            RealisticFixture.problem(since: timestamp.addingTimeInterval(60))
+        ])
+
+        let problems = try XCTUnwrap(snapshot.providerDetail(of: "anthropic", now: timestamp)).problems
+
+        XCTAssertEqual(problems.map { $0.sinceText(now: timestamp) }, ["since just now", "since just now"])
+    }
+
+    func testAnAccountRowSpeaksItsResetCreditsAfterEverythingElse() throws {
+        let session = quota(id: "session", remainingPercent: 70)
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "claude-a", quotas: [session]),
+            report(accountID: "claude-b", resetCredits: 0, quotas: [session]),
+            report(accountID: "claude-c", resetCredits: 1, quotas: [session]),
+            report(accountID: "claude-d", fetchedAt: timestamp.addingTimeInterval(-3_600), resetCredits: 2, quotas: [session])
+        ])
+
+        let accounts = try XCTUnwrap(snapshot.providerDetail(of: "anthropic", now: timestamp)).accounts
+
+        XCTAssertEqual(accounts.map(\.resetCredits), [nil, nil, 1, 2])
+        XCTAssertEqual(accounts[0].accessibilityLabel(accountLabel: "Account 1", now: timestamp), "Account 1, 5 hour 30% used")
+        XCTAssertEqual(accounts[1].accessibilityLabel(accountLabel: "Account 2", now: timestamp), "Account 2, 5 hour 30% used")
+        XCTAssertEqual(accounts[2].accessibilityLabel(accountLabel: "Account 3", now: timestamp), "Account 3, 5 hour 30% used, 1 reset credit available")
+        XCTAssertEqual(
+            accounts[3].accessibilityLabel(accountLabel: "Account 4", now: timestamp),
+            "Account 4, 5 hour 30% used, stale, 2 reset credits available"
+        )
+    }
+
+    func testTheHeaderSaysHowOldTheDataIsAndWhatTheRefreshIsDoing() {
+        func text(_ status: CollectionStatus, after seconds: TimeInterval) -> String {
+            status.text(now: timestamp.addingTimeInterval(seconds))
+        }
+        let live = CollectionStatus.snapshot(.live, dataDate: timestamp, refresh: .idle)
+
+        XCTAssertEqual(text(live, after: 0), "Updated just now")
+        XCTAssertEqual(text(live, after: 59), "Updated just now")
+        XCTAssertEqual(text(live, after: 60), "Updated 1m ago")
+        XCTAssertEqual(text(live, after: 180), "Updated 3m ago")
+        XCTAssertEqual(text(live, after: 7_500), "Updated 2h 5m ago")
+        XCTAssertEqual(text(live, after: 90_000), "Updated 1d 1h ago")
+        XCTAssertEqual(text(live, after: 7_200), "Updated 2h ago")
+        XCTAssertEqual(text(live, after: 86_400), "Updated 1d ago")
+        XCTAssertEqual(text(live, after: -30), "Updated just now")
+        XCTAssertEqual(text(.snapshot(.cached, dataDate: timestamp, refresh: .idle), after: 7_500), "Saved snapshot · updated 2h 5m ago")
+        XCTAssertEqual(text(.snapshot(.live, dataDate: timestamp, refresh: .refreshing), after: 180), "Refreshing · updated 3m ago")
+        XCTAssertEqual(text(.snapshot(.cached, dataDate: timestamp, refresh: .refreshing), after: 7_500), "Refreshing · updated 2h 5m ago")
+        XCTAssertEqual(text(.snapshot(.cached, dataDate: timestamp, refresh: .failed), after: 7_500), "Refresh failed · data from 2h 5m ago")
+        XCTAssertEqual(text(.snapshot(.live, dataDate: timestamp, refresh: .failed), after: 20), "Refresh failed · data from just now")
+        XCTAssertEqual(text(.noSnapshot(.idle), after: 0), "Waiting for OMP")
+        XCTAssertEqual(text(.noSnapshot(.refreshing), after: 0), "Refreshing OMP")
+        XCTAssertEqual(text(.noSnapshot(.failed), after: 0), "Refresh failed")
+    }
+
+    func testASnapshotsOldestReportIsTheOldestFetchTimeAndNilWhenNoReportSaysWhen() {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(accountID: "a", fetchedAt: timestamp.addingTimeInterval(-600)),
+            report(accountID: "b", fetchedAt: timestamp.addingTimeInterval(-7_200)),
+            report(accountID: "c", fetchedAt: timestamp)
+        ])
+
+        XCTAssertEqual(snapshot.oldestReportFetchedAt, timestamp.addingTimeInterval(-7_200))
+        XCTAssertNil(UsageSnapshot(generatedAt: timestamp, reportDrafts: [], accountProblems: [RealisticFixture.problem()]).oldestReportFetchedAt)
     }
 
     private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
@@ -727,6 +890,7 @@ final class UsageDomainTests: XCTestCase {
         projectID: String? = nil,
         label: String? = nil,
         fetchedAt: Date? = nil,
+        resetCredits: Int? = nil,
         quotas: [UsageQuotaDraft]? = nil
     ) -> UsageReportDraft {
         UsageReportDraft(
@@ -734,7 +898,7 @@ final class UsageDomainTests: XCTestCase {
             sourceAccount: SourceAccountIdentity(accountID: accountID, organizationID: organizationID, projectID: projectID),
             privateDisplayLabel: label,
             fetchedAt: fetchedAt ?? timestamp,
-            resetCredits: nil,
+            resetCredits: resetCredits,
             quotas: quotas ?? [quota(id: "quota-1")]
         )
     }
@@ -922,7 +1086,7 @@ enum RealisticFixture {
     static let fetchedAt = Date(timeIntervalSince1970: 1_800_000_000)
 
     // The first `unmeasuredClaudeAccounts` Claude accounts report no amounts at all.
-    static func snapshot(unmeasuredClaudeAccounts: Int = 0) -> UsageSnapshot {
+    static func snapshot(unmeasuredClaudeAccounts: Int = 0, accountProblems: [AccountProblem] = []) -> UsageSnapshot {
         let claude = [100.0, 90, 80, 70, 55].enumerated().map { index, weeklyUsed -> UsageReportDraft in
             let isMeasured = index >= unmeasuredClaudeAccounts
             return report("anthropic", "claude-\(index)", [
@@ -945,8 +1109,19 @@ enum RealisticFixture {
         ])
         return UsageSnapshot(
             generatedAt: fetchedAt,
-            reportDrafts: [cursor, codex[0], claude[0], grok, claude[1], codex[1], claude[2], claude[3], codex[2], claude[4]]
+            reportDrafts: [cursor, codex[0], claude[0], grok, claude[1], codex[1], claude[2], claude[3], codex[2], claude[4]],
+            accountProblems: accountProblems
         )
+    }
+
+    static func problem(
+        _ kind: AccountProblemKind = .disconnected,
+        provider: String = "anthropic",
+        label: String? = nil,
+        reason: String? = nil,
+        since: Date? = nil
+    ) -> AccountProblem {
+        AccountProblem(provider: provider, kind: kind, privateDisplayLabel: label, reason: reason, since: since)
     }
 
     private static func report(_ provider: String, _ accountID: String, _ quotas: [UsageQuotaDraft]) -> UsageReportDraft {

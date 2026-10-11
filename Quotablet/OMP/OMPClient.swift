@@ -71,11 +71,7 @@ struct OMPClient: Sendable {
 
         let drafts = envelope.reports.map { report in
             let sourceAccount = Self.sourceAccount(for: report)
-            let privateDisplayLabel = Self.nonEmpty(report.metadata?.email)
-                ?? Self.nonEmpty(report.metadata?.organizationName)
-                ?? Self.nonEmpty(report.metadata?.accountID)
-                ?? Self.nonEmpty(report.metadata?.projectID)
-                ?? Self.nonEmpty(report.metadata?.organizationID)
+            let privateDisplayLabel = Self.privateDisplayLabel(of: report.metadata)
             let quotas = report.limits.map { limit in
                 let window = limit.window.map {
                     QuotaWindow(
@@ -130,16 +126,52 @@ struct OMPClient: Sendable {
         }) else {
             throw OMPClientError.invalidResponse
         }
+        let accountProblems = envelope.disabledCredentials.compactMap { Self.accountProblem(from: $0, kind: .disconnected) }
+            + envelope.accountsWithoutUsage.compactMap { Self.accountProblem(from: $0, kind: .noUsageData) }
         return UsageSnapshot(
             generatedAt: envelope.generatedAt.date,
             receivedAt: receivedAt,
-            reportDrafts: drafts
+            reportDrafts: drafts,
+            accountProblems: accountProblems
         )
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value, !value.allSatisfy(\.isWhitespace) else { return nil }
         return value
+    }
+
+    // Email first, then the organization's name, then the account, project and organization ids. A report and a problem account share the order.
+    private static func privateDisplayLabel(of identity: OMPWireMetadata?) -> String? {
+        nonEmpty(identity?.email)
+            ?? nonEmpty(identity?.organizationName)
+            ?? nonEmpty(identity?.accountID)
+            ?? nonEmpty(identity?.projectID)
+            ?? nonEmpty(identity?.organizationID)
+    }
+
+    // Only a disconnected account has a reason and a time. An entry without a provider cannot be placed on a page, so it is dropped.
+    private static func accountProblem(from entry: OMPWireAccountEntry, kind: AccountProblemKind) -> AccountProblem? {
+        guard let provider = nonEmpty(entry.provider) else { return nil }
+        let isDisconnected = kind == .disconnected
+        return AccountProblem(
+            provider: provider,
+            kind: kind,
+            privateDisplayLabel: privateDisplayLabel(of: entry.identity),
+            reason: isDisconnected ? disconnectReason(from: entry.cause) : nil,
+            since: isDisconnected ? entry.disabledAt?.date : nil
+        )
+    }
+
+    // The upstream error_description, else a JSON message, when the cause embeds one; else the clause after the last ": ". A clause that
+    // ends in a JSON body loses its quotes and braces.
+    private static func disconnectReason(from cause: String?) -> String? {
+        guard let cause else { return nil }
+        let described = cause.firstMatch(of: #/\\?"error_description\\?"\s*:\s*\\?"([^"\\]+)/#)?.output.1
+            ?? cause.firstMatch(of: #/\\?"message\\?"\s*:\s*\\?"([^"\\]+)/#)?.output.1
+        let text = described.map(String.init) ?? cause.components(separatedBy: ": ").last ?? cause
+        let reason = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"{}")))
+        return reason.isEmpty ? nil : reason
     }
 
     private static func sourceAccount(for report: OMPWireReport) -> SourceAccountIdentity? {
@@ -214,6 +246,57 @@ struct OMPClient: Sendable {
 private struct OMPWireEnvelope: Decodable {
     let generatedAt: OMPWireDate
     let reports: [OMPWireReport]
+    let disabledCredentials: [OMPWireAccountEntry]
+    let accountsWithoutUsage: [OMPWireAccountEntry]
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, reports, disabledCredentials, accountsWithoutUsage
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try container.decode(OMPWireDate.self, forKey: .generatedAt)
+        reports = try container.decode([OMPWireReport].self, forKey: .reports)
+        disabledCredentials = Self.readableEntries(in: container, forKey: .disabledCredentials)
+        accountsWithoutUsage = Self.readableEntries(in: container, forKey: .accountsWithoutUsage)
+    }
+
+    // Older OMP output has neither list. A list or an entry that cannot be read is dropped, so it never costs the reports.
+    private static func readableEntries(in container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> [OMPWireAccountEntry] {
+        let entries = try? container.decodeIfPresent([Readable<OMPWireAccountEntry>].self, forKey: key)
+        return (entries ?? []).compactMap(\.value)
+    }
+}
+
+// Decodes to nil in place of throwing, so one unreadable element does not fail the array that holds it.
+private struct Readable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) {
+        value = try? Value(from: decoder)
+    }
+}
+
+// An account listed beside the reports, either a disabled credential or an account that has no report. Its identity keys
+// sit in the entry itself, under the names a report's metadata uses.
+private struct OMPWireAccountEntry: Decodable {
+    let provider: String
+    let identity: OMPWireMetadata
+    let cause: String?
+    let disabledAt: OMPWireDate?
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, cause
+        case disabledAt = "disabledAtMs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decode(String.self, forKey: .provider)
+        cause = try container.decodeIfPresent(String.self, forKey: .cause)
+        disabledAt = try container.decodeIfPresent(OMPWireDate.self, forKey: .disabledAt)
+        identity = try OMPWireMetadata(from: decoder)
+    }
 }
 
 private struct OMPWireReport: Decodable {

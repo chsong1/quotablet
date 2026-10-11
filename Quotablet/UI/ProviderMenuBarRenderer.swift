@@ -54,7 +54,7 @@ struct RoundedSquareGeometry: Equatable, Sendable {
 //
 // A logo is drawn exactly as its file provides it, trimmed to its artwork and scaled to one height. It is never
 // tinted, dimmed, masked or outlined, because the brands forbid altering their marks. Only the text beside it
-// says that a provider's data is stale.
+// says that a provider's data is stale, and a red dot after the text says that one of its accounts has a problem.
 enum ProviderMenuBarRenderer {
     private static let height: CGFloat = 16
     private static let logoHeight: CGFloat = 15
@@ -71,6 +71,8 @@ enum ProviderMenuBarRenderer {
     private static let staleFillAlpha: CGFloat = 0.55
     private static let stripeFactor: CGFloat = 0.45
     private static let unknownAlpha: CGFloat = 0.90
+    private static let problemDotDiameter: CGFloat = 4
+    private static let problemDotGap: CGFloat = 3
 
     private struct Item: Sendable {
         let provider: String
@@ -79,6 +81,7 @@ enum ProviderMenuBarRenderer {
         let isStale: Bool
         let text: String
         let textAdvance: CGFloat
+        let hasProblem: Bool
     }
 
     private struct Placement: Sendable {
@@ -87,6 +90,8 @@ enum ProviderMenuBarRenderer {
         let originX: CGFloat
         let markWidth: CGFloat
         let textX: CGFloat
+        // Where the problem dot starts. Nil when no account of the provider has a problem.
+        let dotX: CGFloat?
     }
 
     private struct Arrangement: Sendable {
@@ -124,7 +129,8 @@ enum ProviderMenuBarRenderer {
             usedFraction: usage.usedFraction,
             isStale: usage.isStale,
             text: text,
-            textAdvance: advance(of: text, font: textFont())
+            textAdvance: advance(of: text, font: textFont()),
+            hasProblem: usage.problemCount > 0
         )
     }
 
@@ -136,8 +142,11 @@ enum ProviderMenuBarRenderer {
             let markWidth = logo.map { logoHeight * $0.aspectRatio } ?? badgeSide
             // Whole points keep the text on the pixel grid at 1x.
             let textX = (originX + markWidth + logoTextGap).rounded(.up)
-            placements.append(Placement(item: item, logo: logo, originX: originX, markWidth: markWidth, textX: textX))
-            originX = (textX + item.textAdvance).rounded(.up) + providerGap
+            let textEnd = (textX + item.textAdvance).rounded(.up)
+            // The dot follows the text, so a provider with a problem keeps its logo and its text where they were.
+            let dotX = item.hasProblem ? textEnd + problemDotGap : nil
+            placements.append(Placement(item: item, logo: logo, originX: originX, markWidth: markWidth, textX: textX, dotX: dotX))
+            originX = (dotX.map { $0 + problemDotDiameter } ?? textEnd) + providerGap
         }
         return Arrangement(placements: placements, width: placements.isEmpty ? 0 : originX - providerGap)
     }
@@ -145,9 +154,11 @@ enum ProviderMenuBarRenderer {
     private static func draw(_ arrangement: Arrangement, appearance: NSAppearance, in context: CGContext) {
         var ink = CGColor(gray: 0, alpha: 1)
         var quietInk = ink
+        var problemInk = ink
         appearance.performAsCurrentDrawingAppearance {
             ink = NSColor.labelColor.cgColor
             quietInk = NSColor.secondaryLabelColor.cgColor
+            problemInk = NSColor.systemRed.cgColor
         }
         let font = textFont()
         // A whole-point baseline keeps the flat strokes of digits crisp at 1x.
@@ -163,6 +174,10 @@ enum ProviderMenuBarRenderer {
             }
             let textInk = placement.item.isStale ? quietInk : ink
             drawText(placement.item.text, font: font, at: CGPoint(x: placement.textX, y: baseline), color: textInk, in: context)
+            if let dotX = placement.dotX {
+                context.setFillColor(problemInk)
+                context.fillEllipse(in: CGRect(x: dotX, y: (height - problemDotDiameter) / 2, width: problemDotDiameter, height: problemDotDiameter))
+            }
         }
     }
 
