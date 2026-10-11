@@ -60,7 +60,7 @@ struct UsagePanel: View {
 
     private func panel(now: Date) -> some View {
         VStack(spacing: 0) {
-            header
+            header(now: now)
             Divider().opacity(0.65)
             if let error = store.lastError {
                 NoticeRow(text: error.localizedDescription, symbol: "exclamationmark.triangle.fill", color: .orange)
@@ -79,15 +79,16 @@ struct UsagePanel: View {
         .accessibilityIdentifier("quotablet.usage-panel")
     }
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
+    private func header(now: Date) -> some View {
+        let status = store.collectionStatus.text(now: now)
+        return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Quotablet")
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
-                Text(collectionStatus)
+                Text(status)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel(collectionStatus)
+                    .accessibilityLabel(status)
             }
             Spacer(minLength: 8)
             Button {
@@ -108,22 +109,10 @@ struct UsagePanel: View {
         .padding(.vertical, 14)
     }
 
-    private var collectionStatus: String {
-        if store.isRefreshing { return "Refreshing OMP" }
-        if store.lastError != nil {
-            return store.snapshot == nil ? "Refresh failed" : "Refresh failed · showing saved data"
-        }
-        guard let snapshot = store.snapshot else { return "Waiting for OMP" }
-        if snapshot.reports.isEmpty {
-            return store.snapshotOrigin == .cached ? "Saved snapshot · no usage reports" : "No usage reports"
-        }
-        return store.snapshotOrigin == .cached ? "Saved snapshot" : "OMP snapshot received"
-    }
-
     @ViewBuilder
     private func content(now: Date) -> some View {
         if let snapshot = store.snapshot {
-            if snapshot.reports.isEmpty {
+            if snapshot.isEmpty {
                 EmptyState(
                     symbol: "chart.bar.xaxis",
                     title: store.snapshotOrigin == .cached ? "No saved usage reports" : "No usage reports",

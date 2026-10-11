@@ -187,6 +187,81 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(loaded.snapshot?.reports.first?.quotas.first?.label, "Session")
     }
 
+    func testASnapshotSavedBeforeProblemAccountsExistedStillLoadsWithNoProblems() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // What the build before this one wrote, so it has no accountProblems key.
+        let oldFormat = #"""
+        {
+          "generatedAt": 821692800,
+          "receivedAt": 821692801,
+          "revision": "5B1C6C1E-3F6A-4E52-9B7E-0A1D2C3B4A59",
+          "reports": [
+            {
+              "id": { "ordinal": 0, "snapshotID": "5B1C6C1E-3F6A-4E52-9B7E-0A1D2C3B4A59" },
+              "provider": "anthropic",
+              "accountIdentity": { "stable": { "_0": { "accountID": "synthetic-account", "provider": "anthropic" } } },
+              "sourceAccount": { "accountID": "synthetic-account" },
+              "privateDisplayLabel": "person@example.invalid",
+              "fetchedAt": 821692700,
+              "resetCredits": 2,
+              "quotas": [
+                {
+                  "id": { "quotaOrdinal": 0, "reportOrdinal": 0, "snapshotID": "5B1C6C1E-3F6A-4E52-9B7E-0A1D2C3B4A59" },
+                  "limitID": "anthropic:7d",
+                  "label": "Claude 7 Day",
+                  "scope": { "accountID": "synthetic-account", "provider": "anthropic", "windowID": "7d" },
+                  "window": { "durationMilliseconds": 604800000, "identity": { "id": "7d" }, "label": "7 Day" },
+                  "amount": { "limit": 100, "remaining": 75, "remainingFraction": 0.75, "unit": { "percent": {} }, "used": 25, "usedFraction": 0.25 },
+                  "status": { "available": {} },
+                  "resetsAt": 821696400
+                }
+              ]
+            }
+          ]
+        }
+        """#
+        try Data(oldFormat.utf8).write(to: directory.appendingPathComponent("usage-snapshot.json"))
+
+        let loaded = await AppPersistence(directoryURL: directory).load()
+        let snapshot = try XCTUnwrap(loaded.snapshot)
+
+        XCTAssertEqual(snapshot.revision, UUID(uuidString: "5B1C6C1E-3F6A-4E52-9B7E-0A1D2C3B4A59"))
+        XCTAssertEqual(snapshot.generatedAt, Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertEqual(snapshot.reports.map(\.privateDisplayLabel), ["person@example.invalid"])
+        XCTAssertEqual(snapshot.reports.first?.resetCredits, 2)
+        XCTAssertEqual(snapshot.reports.first?.quotas.first?.label, "Claude 7 Day")
+        XCTAssertEqual(snapshot.accountProblems, [])
+    }
+
+    func testASnapshotWithProblemAccountsSurvivesASaveAndALoad() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = AppPersistence(directoryURL: directory)
+        let snapshot = UsageSnapshot(
+            generatedAt: fetchedAt,
+            receivedAt: fetchedAt.addingTimeInterval(1),
+            reportDrafts: [sampleReport(accountID: "acct-a")],
+            accountProblems: [
+                RealisticFixture.problem(
+                    .disconnected,
+                    label: "person@example.invalid",
+                    reason: "Refresh token not found or invalid",
+                    since: Date(timeIntervalSince1970: 1_799_996_400)
+                ),
+                RealisticFixture.problem(.noUsageData, provider: "openai-codex")
+            ]
+        )
+
+        let saved = await persistence.save(snapshot: snapshot)
+        let loaded = await persistence.load()
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(loaded.snapshot, snapshot)
+        XCTAssertEqual(loaded.snapshot?.accountProblems.map(\.kind), [.disconnected, .noUsageData])
+    }
+
     func testAccessibilityLabelNamesEachProviderWithItsCombinedUsageThenHowOldTheDataIs() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -224,6 +299,55 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Quotablet. No quota is available for the menu bar. Waiting for OMP")
         await store.refresh()
         XCTAssertEqual(store.menuBarAccessibilityLabel(now: fetchedAt), "Quotablet. No quota is available for the menu bar. Provider age unknown")
+
+        await store.shutdown()
+    }
+
+    func testAccessibilityLabelSpeaksTheProblemAccountsOfEachProvider() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mixed = await refreshedStore(RealisticFixture.snapshot(accountProblems: [RealisticFixture.problem()]), directory: directory)
+        let onlyProblems = await refreshedStore(
+            UsageSnapshot(generatedAt: fetchedAt, reportDrafts: [], accountProblems: Array(repeating: RealisticFixture.problem(), count: 5)),
+            directory: directory
+        )
+
+        XCTAssertEqual(
+            mixed.menuBarAccessibilityLabel(now: fetchedAt),
+            "Claude 79% used across 5 accounts, 1 account needs sign-in; Codex 94% used across 3 accounts; Grok 1% used, 1 account; "
+                + "Cursor 100% used, 1 account. Provider data under 1m old"
+        )
+        XCTAssertEqual(onlyProblems.menuBarAccessibilityLabel(now: fetchedAt), "Claude, 5 accounts need sign-in. Provider age unknown")
+
+        await mixed.shutdown()
+        await onlyProblems.shutdown()
+    }
+
+    func testTheHeaderStatusNamesTheOldestReportsAgeAndFallsBackToTheSnapshotsOwnWhenItHoldsNoReport() async throws {
+        func bareReport(_ fetchedAt: Date) -> UsageReportDraft {
+            UsageReportDraft(provider: "anthropic", sourceAccount: nil, privateDisplayLabel: nil, fetchedAt: fetchedAt, resetCredits: nil, quotas: [])
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fetcher = SequencedFetcher([
+            .failure(.timedOut),
+            .success(UsageSnapshot(generatedAt: fetchedAt, reportDrafts: [bareReport(fetchedAt), bareReport(fetchedAt.addingTimeInterval(-7_200))])),
+            .success(UsageSnapshot(generatedAt: fetchedAt.addingTimeInterval(300), reportDrafts: [], accountProblems: [RealisticFixture.problem()])),
+            .failure(.timedOut)
+        ])
+        let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+
+        XCTAssertEqual(store.collectionStatus.text(now: fetchedAt), "Waiting for OMP")
+        await store.refresh()
+        XCTAssertEqual(store.collectionStatus.text(now: fetchedAt), "Refresh failed")
+        await store.refresh()
+        XCTAssertEqual(store.collectionStatus.text(now: fetchedAt.addingTimeInterval(180)), "Updated 2h 3m ago")
+        await store.refresh()
+        XCTAssertEqual(store.collectionStatus.text(now: fetchedAt.addingTimeInterval(480)), "Updated 3m ago")
+        await store.refresh()
+        XCTAssertEqual(store.collectionStatus.text(now: fetchedAt.addingTimeInterval(480)), "Refresh failed · data from 3m ago")
 
         await store.shutdown()
     }

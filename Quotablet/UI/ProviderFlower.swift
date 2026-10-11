@@ -23,12 +23,15 @@ struct Petal: Equatable, Sendable {
     // Inside the petal: a provider's used percent, or an account's number.
     let text: String
     let badge: AttentionBadge?
+    // How many of the provider's accounts need the user to sign in again. Zero draws no sign-in badge.
+    let signInCount: Int
 
     init(_ usage: ProviderUsage) {
         usedFraction = usage.usedFraction
         isStale = usage.isStale
         text = UsageFormatting.usedPercent(usage.usedFraction)
         badge = usage.attention.badge
+        signInCount = usage.problemCount
     }
 
     init(_ account: AccountDetail) {
@@ -36,12 +39,15 @@ struct Petal: Equatable, Sendable {
         isStale = account.isStale
         text = String(account.number)
         badge = account.urgency.map { AttentionBadge(urgency: $0, count: 1) }
+        signInCount = 0
     }
 }
 
 extension ProviderUsage {
+    // The pill's text: the used share, a dash for a provider with no report, or "Unknown" for one whose reports hold no figure.
     var usedText: String {
-        usedFraction == nil ? "Unknown" : "\(UsageFormatting.usedPercent(usedFraction)) used"
+        if usedFraction != nil { return "\(UsageFormatting.usedPercent(usedFraction)) used" }
+        return accountCount == 0 ? "—" : "Unknown"
     }
 }
 
@@ -159,7 +165,19 @@ struct PetalGeometry: Equatable, Sendable {
 
     // Just inside the outer arc and a little clockwise of the axis, so a badge there leaves the tip clear for a logo.
     func badgeCenter(in center: CGPoint) -> CGPoint {
-        let angle = axisAngle + min(max(halfSpan * 0.5, 0.2), 0.38)
+        badgePoint(atAngle: axisAngle + badgeOffsetAngle, in: center)
+    }
+
+    // The same distance counterclockwise of the axis, so the sign-in badge sits clear of the status badge.
+    func signInBadgeCenter(in center: CGPoint) -> CGPoint {
+        badgePoint(atAngle: axisAngle - badgeOffsetAngle, in: center)
+    }
+
+    private var badgeOffsetAngle: CGFloat {
+        min(max(halfSpan * 0.5, 0.2), 0.38)
+    }
+
+    private func badgePoint(atAngle angle: CGFloat, in center: CGPoint) -> CGPoint {
         let radius = outerRadius - 10
         return CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
     }
@@ -394,6 +412,29 @@ struct StatusBadge: View {
     }
 }
 
+// Counts the accounts that need the user to sign in again. A neutral dark capsule with a red symbol, so it never reads as a quota status.
+struct SignInBadge: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color(red: 1.0, green: 0.36, blue: 0.32))
+            Text("\(count)")
+                .font(.system(size: 12, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white)
+        }
+        .padding(.horizontal, 7)
+        .frame(minWidth: 20, minHeight: 20)
+        .background(Capsule().fill(Color(white: 0.13)))
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.9), lineWidth: 1.25))
+        .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+        .accessibilityIdentifier("quotablet.sign-in-badge")
+    }
+}
+
 // One petal: a pale track, the area-correct fill, stale stripes, and its text. The text turns dark exactly at the fill's edge,
 // so a figure the edge cuts through stays legible on both sides.
 struct PetalView: View {
@@ -414,6 +455,10 @@ struct PetalView: View {
             if let badge = petal.badge {
                 StatusBadge(badge: badge, showsCount: badgeShowsCount)
                     .position(geometry.badgeCenter(in: middle))
+            }
+            if petal.signInCount > 0 {
+                SignInBadge(count: petal.signInCount)
+                    .position(geometry.signInBadgeCenter(in: middle))
             }
         }
         .scaleEffect(isLifted ? PetalLook.liftScale : 1)
@@ -762,14 +807,17 @@ private struct ProviderRow: View {
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Text(usage.accountsPhrase)
+                        Text(usage.accountsLine)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
                     Spacer(minLength: 8)
                     if let badge = usage.attention.badge {
                         StatusBadge(badge: badge, showsCount: true)
+                    }
+                    if usage.problemCount > 0 {
+                        SignInBadge(count: usage.problemCount)
                     }
                     Text(usage.usedText)
                         .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())

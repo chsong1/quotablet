@@ -65,27 +65,26 @@ final class UsageStore {
     }
 
     func menuBarAccessibilityLabel(now: Date) -> String {
-        let age = freshness(fetchedAt: snapshot?.reports.compactMap(\.fetchedAt).min()).displayLabel(now: now)
+        let age = freshness(fetchedAt: snapshot?.oldestReportFetchedAt).displayLabel(now: now)
         guard let providers = snapshot?.providerUsage(now: now), !providers.isEmpty else {
             return "Quotablet. No quota is available for the menu bar. \(age)"
         }
         return "\(providers.spokenSummary). \(age)"
     }
 
+    // The header names the age of the oldest report, or of the snapshot itself when it holds no report.
+    var collectionStatus: CollectionStatus {
+        guard let snapshot, let snapshotOrigin else { return .noSnapshot(refreshStatus) }
+        return .snapshot(snapshotOrigin, dataDate: snapshot.oldestReportFetchedAt ?? snapshot.generatedAt, refresh: refreshStatus)
+    }
+
+    private var refreshStatus: UsageRefreshStatus {
+        if isRefreshing { return .refreshing }
+        return lastError != nil ? .failed : .idle
+    }
+
     private func freshness(fetchedAt: Date?) -> UsageFreshness {
-        let refreshStatus: UsageRefreshStatus
-        if isRefreshing {
-            refreshStatus = .refreshing
-        } else if lastError != nil {
-            refreshStatus = .failed
-        } else {
-            refreshStatus = .idle
-        }
-        return UsageFreshness(
-            origin: snapshotOrigin,
-            fetchedAt: fetchedAt,
-            refreshStatus: refreshStatus
-        )
+        UsageFreshness(origin: snapshotOrigin, fetchedAt: fetchedAt, refreshStatus: refreshStatus)
     }
 
     func start() async {

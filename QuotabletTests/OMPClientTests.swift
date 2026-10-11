@@ -282,6 +282,122 @@ final class OMPClientTests: XCTestCase {
         }
     }
 
+    func testDecodesDisabledCredentialsAndAccountsWithoutUsageIntoOneProblemList() throws {
+        let payload = Data(
+            #"""
+            {
+              "generatedAt": 1800000000000,
+              "reports": [],
+              "accountsWithoutUsage": [
+                { "provider": "openai-codex", "type": "oauth", "orgName": "Synthetic Org", "accountId": "codex-account", "authorizedAt": 1799990000000 },
+                { "provider": "cursor", "type": "api_key", "projectId": "cursor-project" },
+                { "provider": "xai-oauth", "type": "oauth" }
+              ],
+              "disabledCredentials": [
+                {
+                  "id": 7,
+                  "provider": "anthropic",
+                  "type": "oauth",
+                  "email": "person@example.invalid",
+                  "orgName": "Synthetic Org",
+                  "cause": "oauth refresh failed: OAuthError: anthropic token refresh failed: 400 {\"error\": \"invalid_grant\", \"error_description\": \"Refresh token not found or invalid\"}",
+                  "disabledAtMs": 1799996400000
+                },
+                { "id": 8, "provider": "anthropic", "type": "oauth", "accountId": "claude-account", "cause": "oauth refresh failed: token revoked by provider" }
+              ]
+            }
+            """#.utf8
+        )
+
+        let problems = try OMPClient.decode(payload).accountProblems
+
+        XCTAssertEqual(problems, [
+            AccountProblem(
+                provider: "anthropic",
+                kind: .disconnected,
+                privateDisplayLabel: "person@example.invalid",
+                reason: "Refresh token not found or invalid",
+                since: Date(timeIntervalSince1970: 1_799_996_400)
+            ),
+            AccountProblem(provider: "anthropic", kind: .disconnected, privateDisplayLabel: "claude-account", reason: "token revoked by provider", since: nil),
+            AccountProblem(provider: "openai-codex", kind: .noUsageData, privateDisplayLabel: "Synthetic Org", reason: nil, since: nil),
+            AccountProblem(provider: "cursor", kind: .noUsageData, privateDisplayLabel: "cursor-project", reason: nil, since: nil),
+            AccountProblem(provider: "xai-oauth", kind: .noUsageData, privateDisplayLabel: nil, reason: nil, since: nil)
+        ])
+    }
+
+    func testOutputWithoutEitherListDecodesWithNoProblemAccounts() throws {
+        let absent = Data(#"{"generatedAt":1800000000000,"reports":[{"provider":"anthropic","fetchedAt":1800000000000,"limits":[]}]}"#.utf8)
+        let empty = Data(#"{"generatedAt":1800000000000,"reports":[],"accountsWithoutUsage":[],"disabledCredentials":[]}"#.utf8)
+
+        let older = try OMPClient.decode(absent)
+
+        XCTAssertEqual(older.reports.map(\.provider), ["anthropic"])
+        XCTAssertEqual(older.accountProblems, [])
+        XCTAssertEqual(try OMPClient.decode(empty).accountProblems, [])
+    }
+
+    func testAnEntryThatCannotBeReadIsDroppedAndNeverCostsTheReportsOrTheOtherEntries() throws {
+        let payload = Data(
+            #"""
+            {
+              "generatedAt": 1800000000000,
+              "reports": [{ "provider": "anthropic", "fetchedAt": 1800000000000, "limits": [] }],
+              "accountsWithoutUsage": "not a list",
+              "disabledCredentials": [
+                { "id": 1, "type": "oauth", "cause": "an entry without a provider" },
+                "not an object",
+                { "id": 2, "provider": "   ", "type": "oauth", "cause": "a blank provider" },
+                { "id": 3, "provider": "anthropic", "type": "oauth", "cause": "oauth refresh failed: token revoked" }
+              ]
+            }
+            """#.utf8
+        )
+
+        let snapshot = try OMPClient.decode(payload)
+
+        XCTAssertEqual(snapshot.reports.count, 1)
+        XCTAssertEqual(snapshot.accountProblems, [
+            AccountProblem(provider: "anthropic", kind: .disconnected, privateDisplayLabel: nil, reason: "token revoked", since: nil)
+        ])
+    }
+
+    func testADisconnectedAccountsReasonIsTheUpstreamDescriptionElseTheClauseAfterTheLastColon() throws {
+        func reason(_ cause: String?) throws -> String? {
+            var entry: [String: Any] = ["id": 1, "provider": "anthropic", "type": "oauth"]
+            entry["cause"] = cause
+            let payload = try JSONSerialization.data(withJSONObject: ["generatedAt": 1_800_000_000_000, "reports": [], "disabledCredentials": [entry]] as [String: Any])
+            return try OMPClient.decode(payload).accountProblems.first?.reason
+        }
+
+        XCTAssertEqual(
+            try reason(#"oauth refresh failed: OAuthError: anthropic token refresh failed: 400 {"error": "invalid_grant", "error_description": "Refresh token not found or invalid"}"#),
+            "Refresh token not found or invalid"
+        )
+        XCTAssertEqual(
+            try reason(#"oauth refresh failed: {\"error_description\": \"Refresh token not found or invalid\"}"#),
+            "Refresh token not found or invalid"
+        )
+        XCTAssertEqual(try reason("oauth refresh failed: OAuthError: openai token refresh failed: connection reset by peer"), "connection reset by peer")
+        XCTAssertEqual(try reason("oauth refresh failed:    token revoked  "), "token revoked")
+        XCTAssertEqual(try reason("oauth refresh failed"), "oauth refresh failed")
+        XCTAssertEqual(
+            try reason(#"oauth refresh failed: OAuthError: anthropic token refresh failed: 400 {"error": "invalid_grant"}"#),
+            "invalid_grant"
+        )
+        XCTAssertEqual(
+            try reason(#"oauth refresh failed: OAuthError: openai token refresh failed: 400 {"error": {"message": "The refresh token was already used.", "code": "refresh_token_reused"}}"#),
+            "The refresh token was already used."
+        )
+        XCTAssertEqual(
+            try reason(#"oauth refresh failed: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Invalid refresh token"}}"#),
+            "Invalid refresh token"
+        )
+        XCTAssertNil(try reason(""))
+        XCTAssertNil(try reason("   "))
+        XCTAssertNil(try reason(nil))
+    }
+
     private func makeExecutable(in directory: URL, body: String) throws -> URL {
         let executable = directory.appendingPathComponent("synthetic-omp")
         try body.write(to: executable, atomically: true, encoding: .utf8)
