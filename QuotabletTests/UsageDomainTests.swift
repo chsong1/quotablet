@@ -877,6 +877,285 @@ final class UsageDomainTests: XCTestCase {
         XCTAssertNil(UsageSnapshot(generatedAt: timestamp, reportDrafts: [], accountProblems: [RealisticFixture.problem()]).oldestReportFetchedAt)
     }
 
+    func testOnlyTheGrokNamespaceReadsAsASharedPoolWithProductUsage() {
+        let quotas = builtQuotas(from: [
+            quota(id: "xai-oauth:credits:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "SuperGrok Weekly Credits"),
+            quota(id: "xai-oauth:product:cursor:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Cursor (Weekly)"),
+            quota(id: "xai-oauth:included:1mo", windowID: "1mo", windowLabel: "Monthly", durationMilliseconds: 2_592_000_000, label: "SuperGrok Monthly Included"),
+            quota(id: "xai-oauth:on-demand", windowID: nil, label: "On-demand"),
+            // An older fixture or snapshot names a quota by its label, and another provider's id that looks like a product row is none.
+            quota(id: "SuperGrok Weekly Credits", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "SuperGrok Weekly Credits"),
+            quota(id: "mistral:product:chat:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Chat (Weekly)")
+        ])
+
+        XCTAssertEqual(quotas.map(\.isSharedPool), [true, false, false, false, false, false])
+        XCTAssertEqual(quotas.map(\.isProductUsage), [false, true, false, false, false, false])
+    }
+
+    func testAProductIsNamedByItsLabelWithoutTheParentheticalThatRestatesTheWindow() {
+        let quotas = builtQuotas(from: [
+            quota(id: "xai-oauth:product:cursor:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Cursor (Weekly)"),
+            quota(id: "xai-oauth:product:grok-build:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Grok Build (weekly)"),
+            quota(id: "xai-oauth:product:api:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "API"),
+            quota(id: "xai-oauth:product:other:1w", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Other (Pro)")
+        ])
+
+        XCTAssertEqual(quotas.map(\.productName), ["Cursor", "Grok Build", "API", "Other (Pro)"])
+    }
+
+    func testProductUsageNeverStandsForAnAccountWhateverItsShare() throws {
+        // A product above its pool is what the longest-window, most-used rule gets wrong: it would pick the product and report 95%.
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(pool: 20, products: [("Cursor", 95), ("GrokBot", 1), ("API", 1)])
+        ])
+
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: timestamp).first)
+        let account = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: timestamp)).accounts[0]
+
+        XCTAssertEqual(usage.measured.map(\.quota.limitID), ["xai-oauth:credits:1w"])
+        XCTAssertEqual(try XCTUnwrap(usage.usedFraction), 0.2, accuracy: 0.0001)
+        XCTAssertEqual(usage.spokenSummary, "Grok 20% used, 1 account")
+        XCTAssertEqual(account.capacityFraction, 0.2)
+        XCTAssertEqual(account.mostUsedFraction, 0.2)
+    }
+
+    func testProductUsageIsNotCountedAgainInTheFigureOfAProviderWithSeveralAccounts() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(accountID: "grok-a", pool: 20, products: [("Cursor", 18), ("GrokBot", 1), ("API", 1)]),
+            RealisticFixture.sharedPoolGrok(accountID: "grok-b", pool: 60, products: [("Cursor", 90), ("API", 10)])
+        ])
+
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: timestamp).first)
+
+        // The mean of the two pools. Taking the largest row of each account would give 55%, and adding the products on top of the pools would give 70%.
+        XCTAssertEqual(try XCTUnwrap(usage.usedFraction), 0.4, accuracy: 0.0001)
+        XCTAssertEqual(usage.accountCount, 2)
+        XCTAssertEqual(usage.measured.map(\.quota.limitID), ["xai-oauth:credits:1w", "xai-oauth:credits:1w"])
+    }
+
+    func testAGrokProductNamedCursorLeavesTheCursorProviderAndItsAccountsAlone() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(pool: 24, products: [("Cursor", 22), ("GrokBot", 1), ("API", 1)]),
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(id: "cursor:usd:individual-auto", windowID: "monthly", windowLabel: "Monthly", durationMilliseconds: nil, label: "Cursor Models", remainingPercent: 90)
+            ])
+        ])
+
+        let providers = snapshot.providerUsage(now: timestamp)
+        let cursor = try XCTUnwrap(snapshot.providerDetail(of: "cursor", now: timestamp))
+
+        // No field joins the Grok account to the Cursor one, so each stays what its own report says.
+        XCTAssertEqual(providers.map(\.provider), ["xai-oauth", "cursor"])
+        XCTAssertEqual(providers.map(\.accountCount), [1, 1])
+        XCTAssertEqual(try XCTUnwrap(providers[0].usedFraction), 0.24, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(providers[1].usedFraction), 0.1, accuracy: 0.0001)
+        XCTAssertTrue(cursor.accounts[0].productUsage.isEmpty)
+        XCTAssertEqual(cursor.accounts[0].windows.map(\.name.short), ["Cursor Models"])
+    }
+
+    func testTheSharedPoolOutranksTheLegacyMonthlyCounterBesideItAndTheCounterAloneStillStandsForTheAccount() throws {
+        let monthly = quota(
+            id: "xai-oauth:included:1mo",
+            windowID: "1mo",
+            windowLabel: "Monthly",
+            durationMilliseconds: 2_592_000_000,
+            label: "SuperGrok Monthly Included",
+            remainingPercent: 30
+        )
+        let unified = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(pool: 20, extra: [monthly])
+        ])
+        let legacy = UsageSnapshot(generatedAt: timestamp, reportDrafts: [report(provider: "xai-oauth", accountID: "grok-a", quotas: [monthly])])
+
+        // The monthly counter is longer and more used, so the longest-window rule alone would pick it over the pool OMP's own policy prefers.
+        XCTAssertEqual(try XCTUnwrap(unified.providerUsage(now: timestamp).first).measured.map(\.quota.limitID), ["xai-oauth:credits:1w"])
+        XCTAssertEqual(try XCTUnwrap(unified.providerUsage(now: timestamp).first?.usedFraction), 0.2, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(legacy.providerUsage(now: timestamp).first).measured.map(\.quota.limitID), ["xai-oauth:included:1mo"])
+        XCTAssertEqual(try XCTUnwrap(legacy.providerUsage(now: timestamp).first?.usedFraction), 0.7, accuracy: 0.0001)
+    }
+
+    func testAReportOfOnlyProductUsageLeavesTheAccountUnmeasuredWithoutSummingItsProducts() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(pool: nil, products: [("Cursor", 22), ("API", 1)])
+        ])
+
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: timestamp).first)
+        let account = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: timestamp)).accounts[0]
+
+        XCTAssertTrue(usage.measured.isEmpty)
+        XCTAssertNil(usage.usedFraction)
+        XCTAssertEqual(usage.spokenSummary, "Grok usage unknown, 1 account")
+        XCTAssertTrue(account.windows.isEmpty)
+        XCTAssertEqual(account.productUsage.map(\.phrase), ["Cursor 22%", "API 1%"])
+    }
+
+    func testProductUsageNeverFlagsAnAccountAndTheSharedPoolStillDoes() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            // A product at 100% inside a pool at 40% is a figure to show. It has no limit to run out of.
+            RealisticFixture.sharedPoolGrok(accountID: "grok-a", pool: 40, products: [("Cursor", 100)]),
+            RealisticFixture.sharedPoolGrok(accountID: "grok-b", pool: 100, products: [("Cursor", 60)])
+        ])
+
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: timestamp).first)
+        let accounts = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: timestamp)).accounts
+
+        XCTAssertEqual(snapshot.reports.map(\.accountStatus), [.ok, .exhausted])
+        XCTAssertEqual(usage.attention, ProviderAttention(exhaustedAccounts: 1, nearLimitAccounts: 0))
+        XCTAssertEqual(accounts.map(\.urgency), [nil, .exhausted])
+    }
+
+    func testAProviderPageShowsTheSharedPoolWithItsProductUsageBeneathIt() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(pool: 24, products: [("Cursor", 22), ("GrokBot", 1), ("API", 1)])
+        ])
+
+        let detail = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: timestamp))
+        let account = detail.accounts[0]
+
+        // The pool is the only window. The products are not columns of their own, and no remaining amount is made up for them.
+        XCTAssertEqual(detail.windowColumns, ["Shared pool"])
+        XCTAssertEqual(account.windows.map(\.name.spoken), ["7 day shared pool"])
+        XCTAssertEqual(account.windows.map(\.usedFraction), [0.24])
+        XCTAssertEqual(account.productUsage.map(\.name), ["Cursor", "GrokBot", "API"])
+        XCTAssertEqual(account.productUsage.map(\.usedFraction), [0.22, 0.01, 0.01])
+        XCTAssertEqual(account.productUsageSummary, "Cursor 22% · GrokBot 1% · API 1%")
+        XCTAssertEqual(
+            account.accessibilityLabel(accountLabel: "Account 1", now: timestamp),
+            "Account 1, 7 day shared pool 24% used, resets in 5 days 18 hours, product usage reported by OMP: Cursor 22%; GrokBot 1%; API 1%"
+        )
+    }
+
+    func testGrokAccountsOnTheSharedPoolAndTheOlderShapeAndOtherProvidersMeasureSideBySide() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(accountID: "grok-new", pool: 20, products: [("Cursor", 95)]),
+            // The older shape: ids that are only labels, and no scope. Its longest-window, most-used rule is kept.
+            report(provider: "xai-oauth", accountID: "grok-old", quotas: [
+                quota(id: "SuperGrok Weekly Credits", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "SuperGrok Weekly Credits", remainingPercent: 40),
+                quota(id: "Grok Build (Weekly)", windowID: "1w", windowLabel: "Weekly", durationMilliseconds: 604_800_000, label: "Grok Build (Weekly)", remainingPercent: 10)
+            ]),
+            // Looks like a product row, but no other provider is known to report a shared pool.
+            report(provider: "mistral", accountID: "mistral-a", quotas: [
+                quota(
+                    id: "mistral:product:chat:1w",
+                    windowID: "1w",
+                    windowLabel: "Weekly",
+                    durationMilliseconds: 604_800_000,
+                    scope: QuotaScope(provider: "mistral", accountID: nil, organizationID: nil, projectID: nil, modelID: nil, tier: nil, windowID: "1w", shared: true),
+                    label: "Chat (Weekly)",
+                    remainingPercent: 5
+                )
+            ]),
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(id: "cursor:usd:individual-auto", windowID: "monthly", windowLabel: "Monthly", durationMilliseconds: nil, label: "Cursor Models", remainingPercent: 70)
+            ])
+        ])
+
+        let providers = Dictionary(uniqueKeysWithValues: snapshot.providerUsage(now: timestamp).map { ($0.provider, $0) })
+        let grok = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: timestamp))
+
+        XCTAssertEqual(providers["xai-oauth"]?.measured.map(\.quota.limitID), ["xai-oauth:credits:1w", "Grok Build (Weekly)"])
+        XCTAssertEqual(try XCTUnwrap(providers["xai-oauth"]?.usedFraction), 0.55, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(providers["mistral"]?.usedFraction), 0.95, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(providers["cursor"]?.usedFraction), 0.3, accuracy: 0.0001)
+        XCTAssertEqual(grok.accounts.map(\.windows).map { $0.map(\.name.short) }, [["Shared pool"], ["Credits", "Build"]])
+        XCTAssertEqual(grok.accounts.map { $0.productUsage.map(\.phrase) }, [["Cursor 95%"], []])
+        XCTAssertTrue(try XCTUnwrap(snapshot.providerDetail(of: "mistral", now: timestamp)).accounts[0].productUsage.isEmpty)
+    }
+
+    func testGrokReportsThatClaimOneSourceIdentityStaySeparateAndEachKeepsItsOwnProductUsage() throws {
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            RealisticFixture.sharedPoolGrok(accountID: "grok-claimed-twice", pool: 20, products: [("Cursor", 10)]),
+            RealisticFixture.sharedPoolGrok(accountID: "grok-claimed-twice", pool: 40, products: [("Cursor", 30)])
+        ])
+
+        for report in snapshot.reports {
+            guard case .transient = report.accountIdentity else {
+                XCTFail("An identity that two reports claim names neither of them.")
+                return
+            }
+        }
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: timestamp).first)
+        let accounts = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: timestamp)).accounts
+
+        XCTAssertEqual(usage.accountCount, 2)
+        XCTAssertEqual(try XCTUnwrap(usage.usedFraction), 0.3, accuracy: 0.0001)
+        XCTAssertEqual(accounts.map { $0.productUsage.map(\.phrase) }, [["Cursor 10%"], ["Cursor 30%"]])
+    }
+
+    func testAScopeTierNarrowsAClaudeOrCodexQuotaWhateverItsLabelSaysButNotAnotherProvidersPlanTier() throws {
+        // As OMP flags them: Claude's whole windows are shared and its meters are not, while a Codex meter is shared like the rest.
+        func scope(_ provider: String, tier: String?, shared: Bool?) -> QuotaScope {
+            QuotaScope(provider: provider, accountID: nil, organizationID: nil, projectID: nil, modelID: nil, tier: tier, windowID: "7d", shared: shared)
+        }
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "anthropic", accountID: "claude-a", quotas: [
+                quota(id: "anthropic:7d", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("anthropic", tier: nil, shared: true), label: "Claude 7 Day", remainingPercent: 70),
+                // The scope names the meter and the label does not, so there is no parenthetical for the label rule to read.
+                quota(id: "anthropic:7d:fable", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("anthropic", tier: "fable", shared: nil), label: "Claude 7 Day Fable", remainingPercent: 5)
+            ]),
+            report(provider: "openai-codex", accountID: "codex-a", quotas: [
+                quota(id: "openai-codex:primary", windowID: "7d", windowLabel: "7 days", durationMilliseconds: 604_800_000, scope: scope("openai-codex", tier: nil, shared: true), label: "7 days", remainingPercent: 60),
+                quota(id: "openai-codex:spark:primary", windowID: "7d", windowLabel: "7 days", durationMilliseconds: 604_800_000, scope: scope("openai-codex", tier: "spark", shared: true), label: "7 days Spark", remainingPercent: 2)
+            ]),
+            // The tier of another provider is the name of its plan. It narrows nothing, so the most used window still stands for the account.
+            report(provider: "devin", accountID: "devin-a", quotas: [
+                quota(id: "daily", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("devin", tier: "Pro", shared: nil), label: "Weekly Quota", remainingPercent: 40)
+            ])
+        ])
+
+        let providers = Dictionary(uniqueKeysWithValues: snapshot.providerUsage(now: timestamp).map { ($0.provider, $0) })
+
+        XCTAssertEqual(providers["anthropic"]?.measured.map(\.quota.limitID), ["anthropic:7d"])
+        XCTAssertEqual(try XCTUnwrap(providers["anthropic"]?.usedFraction), 0.3, accuracy: 0.0001)
+        XCTAssertEqual(providers["openai-codex"]?.measured.map(\.quota.limitID), ["openai-codex:primary"])
+        XCTAssertEqual(providers["devin"]?.measured.map(\.quota.limitID), ["daily"])
+        XCTAssertEqual(try XCTUnwrap(providers["devin"]?.usedFraction), 0.6, accuracy: 0.0001)
+    }
+
+    func testAQuotaInDollarsShowsItsAmountsBesideItsShareAndNeverMixesWithPercentOrOtherUnits() throws {
+        let us = Locale(identifier: "en_US")
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            // Shaped like Cursor in OMP 18.12.3: a share with no budget, and a budget in dollars.
+            report(provider: "cursor", accountID: "cursor-a", quotas: [
+                quota(id: "cursor:usd:individual-auto", windowID: "monthly", windowLabel: "Monthly", durationMilliseconds: nil, label: "Cursor Models", remainingPercent: 100),
+                amountQuota(used: 12.4, limit: 553.95)
+            ])
+        ])
+
+        let account = try XCTUnwrap(snapshot.providerDetail(of: "cursor", now: timestamp)).accounts[0]
+
+        XCTAssertEqual(account.windows.map(\.money?.used), [nil, 12.4])
+        XCTAssertEqual(account.windows.map { $0.money?.text(locale: us) }, [nil, "$12.40 of $553.95"])
+        XCTAssertEqual(account.windows.map(\.usedFraction)[0], 0)
+        XCTAssertEqual(try XCTUnwrap(account.windows[1].usedFraction), 12.4 / 553.95, accuracy: 0.0001)
+        let spent = try XCTUnwrap(account.windows[1].money)
+        XCTAssertEqual(
+            account.accessibilityLabel(accountLabel: "Account 1", now: timestamp),
+            "Account 1, Cursor Models 0% used; Credits 2% used, \(spent.text())"
+        )
+
+        func money(_ unit: UsageUnit, used: Double? = 3, limit: Double? = 10, remaining: Double? = nil) -> MoneyUsage? {
+            MoneyUsage(UsageAmount(used: used, limit: limit, remaining: remaining, usedFraction: nil, remainingFraction: nil, unit: unit))
+        }
+        // Only a unit named USD is money. OMP names the unit of Grok's on-demand amount "unknown", so it shows only as a share.
+        XCTAssertNil(MoneyUsage(nil))
+        XCTAssertNil(money(.percent))
+        XCTAssertNil(money(.unknown("unknown")))
+        XCTAssertNil(money(.missing))
+        XCTAssertNil(money(.usd, used: -1))
+        XCTAssertEqual(money(.usd, used: nil, limit: 100, remaining: 40)?.used, 60)
+        XCTAssertEqual(money(.usd, limit: nil)?.text(locale: us), "$3.00 used")
+        XCTAssertEqual(money(.usd, used: 1250, limit: 1250)?.text(locale: us), "$1,250.00 of $1,250.00")
+
+        // A budget in dollars and a share in percent are not one quantity, so two accounts of them average their shares:
+        // pooled, 50 of 100 and 30 of 300 would add percent to dollars and give 20%.
+        let mixed = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(provider: "cursor", accountID: "cursor-a", quotas: [amountQuota(used: 50, limit: 100, unit: .percent)]),
+            report(provider: "cursor", accountID: "cursor-b", quotas: [amountQuota(used: 30, limit: 300, unit: .usd)])
+        ])
+        XCTAssertEqual(try XCTUnwrap(mixed.providerUsage(now: timestamp).first?.usedFraction), 0.3, accuracy: 0.0001)
+    }
+
     private var timestamp: Date { Date(timeIntervalSince1970: 1_800_000_000) }
 
     private func later(hours: Double) -> Date {
@@ -1112,6 +1391,41 @@ enum RealisticFixture {
             reportDrafts: [cursor, codex[0], claude[0], grok, claude[1], codex[1], claude[2], claude[3], codex[2], claude[4]],
             accountProblems: accountProblems
         )
+    }
+
+    // A Grok account on the weekly shared pool, shaped as OMP 18.12.3 reports it (packages/ai/src/usage/xai-oauth.ts): the credit pool, then a row for
+    // each product that draws on it. All of them are shared and sit on the pool's window, so only their ids tell them apart.
+    // A nil `pool` leaves the pool out, and `extra` follows the rows.
+    static func sharedPoolGrok(
+        accountID: String = "grok-a",
+        pool: Double?,
+        products: [(name: String, used: Double)] = [],
+        extra: [UsageQuotaDraft] = []
+    ) -> UsageReportDraft {
+        var rows: [(id: String, label: String, used: Double)] = []
+        if let pool { rows.append((id: "xai-oauth:credits:1w", label: "SuperGrok Weekly Credits", used: pool)) }
+        for product in products {
+            rows.append((id: "xai-oauth:product:\(product.name.lowercased()):1w", label: "\(product.name) (Weekly)", used: product.used))
+        }
+        let quotas = rows.map { row in
+            UsageQuotaDraft(
+                id: row.id,
+                label: row.label,
+                scope: QuotaScope(provider: "xai-oauth", accountID: nil, organizationID: nil, projectID: nil, modelID: nil, tier: nil, windowID: "1w", shared: true),
+                window: QuotaWindow(identity: QuotaWindowIdentity(id: "1w"), label: "Weekly", durationMilliseconds: 604_800_000, resetLabel: nil),
+                amount: UsageAmount(
+                    used: row.used,
+                    limit: 100,
+                    remaining: 100 - row.used,
+                    usedFraction: row.used / 100,
+                    remainingFraction: (100 - row.used) / 100,
+                    unit: .percent
+                ),
+                status: .available,
+                resetsAt: fetchedAt.addingTimeInterval(138 * 3_600)
+            )
+        }
+        return report("xai-oauth", accountID, quotas + extra)
     }
 
     static func problem(

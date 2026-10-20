@@ -8,6 +8,8 @@ private enum PageMetrics {
     static let rowSpacing: CGFloat = 8
     static let rowPadding: CGFloat = 8
     static let chip: CGFloat = 24
+    // The width of a window's name on a card. The money line and the product usage under the windows line up with its bar.
+    static let windowName: CGFloat = 96
 
     // Three accounts leave room for a larger flower. Five accounts with three windows each still need the height for their rows.
     static func flowerDiameter(accountCount: Int) -> CGFloat {
@@ -418,6 +420,12 @@ private struct AccountRow: View {
                     }
                 }
             }
+            if let summary = account.productUsageSummary {
+                Text("\(AccountDetail.productUsageTitle) · \(AccountDetail.productUsageSource) · \(summary)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
         }
         .padding(.horizontal, PageMetrics.rowPadding)
         .padding(.vertical, 5)
@@ -503,7 +511,15 @@ private struct AccountCard: View {
             }
             VStack(spacing: 9) {
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
-                    WindowLine(window: window, isStale: account.isStale, now: now)
+                    VStack(alignment: .leading, spacing: 3) {
+                        WindowLine(window: window, isStale: account.isStale, now: now)
+                        if let money = window.money {
+                            MoneyLine(money: money)
+                        }
+                    }
+                }
+                if !account.productUsage.isEmpty {
+                    ProductUsageBlock(entries: account.productUsage, isStale: account.isStale)
                 }
             }
         }
@@ -528,7 +544,7 @@ private struct WindowLine: View {
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 96, alignment: .leading)
+                .frame(width: PageMetrics.windowName, alignment: .leading)
             ThinBar(used: window.usedFraction, color: ink, height: 5, isStale: isStale)
             switch window.reading(now: now) {
             case .used(let percent, let resetsIn):
@@ -549,5 +565,64 @@ private struct WindowLine: View {
                     .frame(width: 114, alignment: .trailing)
             }
         }
+    }
+}
+
+// What a quota in dollars has used, under its own line. The percent above it is the same quota's share, and the two are never added.
+private struct MoneyLine: View {
+    let money: MoneyUsage
+
+    var body: some View {
+        Text(money.text())
+            .font(.system(size: 11))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.leading, PageMetrics.windowName + 10)
+    }
+}
+
+// What each product has used of the shared pool, as OMP reports it. It sits under the account's windows in smaller, quieter type with a rule down
+// its side, so it reads as a breakdown and not as limits of its own. A product has a used percent and nothing more: no remaining amount, no reset time.
+private struct ProductUsageBlock: View {
+    let entries: [ProductUsageEntry]
+    let isStale: Bool
+
+    private static let indent: CGFloat = 12
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(AccountDetail.productUsageTitle)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(AccountDetail.productUsageSource)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                HStack(spacing: 10) {
+                    Text(entry.name)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: PageMetrics.windowName - Self.indent, alignment: .leading)
+                    ThinBar(used: entry.usedFraction, color: .secondary, height: 3, isStale: isStale)
+                    Text(UsageFormatting.usedPercent(entry.usedFraction))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                    Color.clear.frame(width: 70, height: 1)
+                }
+            }
+        }
+        .padding(.leading, Self.indent)
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(Color.primary.opacity(0.18))
+                .frame(width: 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

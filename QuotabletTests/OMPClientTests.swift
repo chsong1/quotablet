@@ -185,6 +185,89 @@ final class OMPClientTests: XCTestCase {
         ))
     }
 
+    func testTheWeeklyGrokShapeDecodesWithOnlyItsSharedPoolStandingForTheAccountWhileCursorStaysSeparate() throws {
+        func limit(_ id: String, _ label: String, used: Double) -> String {
+            """
+            {
+              "id": "\(id)",
+              "label": "\(label)",
+              "scope": { "provider": "xai-oauth", "windowId": "1w", "shared": true },
+              "window": { "id": "1w", "label": "Weekly", "durationMs": 604800000, "resetsAt": 1800500000000 },
+              "amount": { "used": \(used), "limit": 100, "remaining": \(100 - used), "usedFraction": \(used / 100), "remainingFraction": \(1 - used / 100), "unit": "percent" },
+              "status": "ok"
+            }
+            """
+        }
+        let payload = Data(
+            """
+            {
+              "generatedAt": 1800000000000,
+              "reports": [
+                {
+                  "provider": "xai-oauth",
+                  "fetchedAt": 1800000000000,
+                  "metadata": { "accountId": "synthetic-grok", "billingKind": "weekly" },
+                  "limits": [
+                    \(limit("xai-oauth:credits:1w", "SuperGrok Weekly Credits", used: 24)),
+                    \(limit("xai-oauth:product:cursor:1w", "Cursor (Weekly)", used: 22)),
+                    \(limit("xai-oauth:product:grokbot:1w", "GrokBot (Weekly)", used: 1)),
+                    \(limit("xai-oauth:product:api:1w", "API (Weekly)", used: 1)),
+                    {
+                      "id": "xai-oauth:on-demand",
+                      "label": "On-demand",
+                      "scope": { "provider": "xai-oauth", "shared": true },
+                      "amount": { "used": 0, "limit": 50, "remaining": 50, "usedFraction": 0, "remainingFraction": 1, "unit": "unknown" },
+                      "status": "ok"
+                    }
+                  ]
+                },
+                {
+                  "provider": "cursor",
+                  "fetchedAt": 1800000000000,
+                  "limits": [
+                    {
+                      "id": "cursor:usd:individual-auto",
+                      "label": "Cursor Models",
+                      "scope": { "provider": "cursor", "windowId": "monthly" },
+                      "window": { "id": "monthly", "label": "Monthly", "resetsAt": 1801000000000 },
+                      "amount": { "used": 0, "usedFraction": 0, "unit": "percent" },
+                      "status": "ok"
+                    },
+                    {
+                      "id": "cursor:usd:individual-api",
+                      "label": "Other Models",
+                      "scope": { "provider": "cursor", "windowId": "monthly" },
+                      "window": { "id": "monthly", "label": "Monthly", "resetsAt": 1801000000000 },
+                      "amount": { "used": 0, "limit": 553.95, "remaining": 553.95, "usedFraction": 0, "remainingFraction": 1, "unit": "usd" },
+                      "status": "ok"
+                    }
+                  ]
+                }
+              ]
+            }
+            """.utf8
+        )
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let snapshot = try OMPClient.decode(payload, receivedAt: now)
+        let providers = snapshot.providerUsage(now: now)
+        let grok = try XCTUnwrap(snapshot.providerDetail(of: "xai-oauth", now: now)).accounts[0]
+        let cursor = try XCTUnwrap(snapshot.providerDetail(of: "cursor", now: now)).accounts[0]
+
+        XCTAssertEqual(providers.map(\.provider), ["xai-oauth", "cursor"])
+        XCTAssertEqual(providers[0].measured.map(\.quota.limitID), ["xai-oauth:credits:1w"])
+        XCTAssertEqual(try XCTUnwrap(providers[0].usedFraction), 0.24, accuracy: 0.0001)
+        XCTAssertEqual(grok.windows.map(\.name.short), ["Shared pool", "On-demand"])
+        // OMP names the unit of the on-demand amount "unknown", so it has no currency to show.
+        XCTAssertNil(grok.windows[1].money)
+        XCTAssertEqual(grok.productUsage.map(\.phrase), ["Cursor 22%", "GrokBot 1%", "API 1%"])
+        // The Cursor report carries no account identity, so nothing joins it to the Grok account.
+        XCTAssertNil(snapshot.reports[1].sourceAccount)
+        XCTAssertEqual(try XCTUnwrap(providers[1].usedFraction), 0, accuracy: 0.0001)
+        XCTAssertEqual(cursor.windows.map(\.money?.limit), [nil, 553.95])
+        XCTAssertTrue(cursor.productUsage.isEmpty)
+    }
+
     func testScopeDiscriminatorAliasesDoNotBecomeIdentity() throws {
         let payload = Data(
             """
