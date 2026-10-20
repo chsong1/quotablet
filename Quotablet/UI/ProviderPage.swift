@@ -8,15 +8,12 @@ private enum PageMetrics {
     static let rowSpacing: CGFloat = 8
     static let rowPadding: CGFloat = 8
     static let chip: CGFloat = 24
-    // The badge of an account whose email domain has a logo keeps the 24 pt footprint of the plain number. Its plate is 2 pt short of the footprint
-    // on the right and below, where the number's disc sits. Every mark is fitted into a box set toward the plate's upper left: one taller than wide
-    // fills the box's height and a wider one its width, so the disc and the ring clear it whatever its shape.
-    static let chipPlate: CGFloat = 22
+    // The badge of an account whose email domain has a logo keeps the 24 pt footprint of the plain number. The mark is centered on a full-size
+    // white plate with equal space on every side; the number's disc hangs off the lower right corner so it covers as little of the mark as it can.
     static let chipRing: CGFloat = 1.25
-    static let chipMarkHeight: CGFloat = 9.5
-    static let chipMarkMaxWidth: CGFloat = 10.2
-    static let chipMarkOffset = CGSize(width: -1, height: -1.8)
+    static let chipMark: CGFloat = 14
     static let chipDisc: CGFloat = 10.5
+    static let chipDiscOverhang: CGFloat = 3
     static let chipDiscDigits: CGFloat = 7
     // The width of a window's name on a card. The money line and the product usage under the windows line up with its bar.
     static let windowName: CGFloat = 96
@@ -321,9 +318,9 @@ struct AccountChip: View {
     }
 
     private func companyBadge(_ logo: ProviderLogo) -> some View {
-        let mark = LogoFit.size(aspectRatio: logo.aspectRatio, height: PageMetrics.chipMarkHeight, maxWidth: PageMetrics.chipMarkMaxWidth)
+        let mark = LogoFit.size(aspectRatio: logo.aspectRatio, height: PageMetrics.chipMark, maxWidth: PageMetrics.chipMark)
         return ChipFill(color: color, isStale: isStale)
-            .frame(width: PageMetrics.chipPlate, height: PageMetrics.chipPlate)
+            .frame(width: PageMetrics.chip, height: PageMetrics.chip)
             .overlay {
                 Circle()
                     .fill(Color.white)
@@ -333,10 +330,8 @@ struct AccountChip: View {
                             .renderingMode(.original)
                             .resizable()
                             .frame(width: mark.width, height: mark.height)
-                            .offset(PageMetrics.chipMarkOffset)
                     }
             }
-            .frame(width: PageMetrics.chip, height: PageMetrics.chip, alignment: .topLeading)
             .overlay(alignment: .bottomTrailing) {
                 Text("\(number)")
                     .font(.system(size: PageMetrics.chipDiscDigits, weight: .heavy, design: .rounded))
@@ -350,6 +345,7 @@ struct AccountChip: View {
                         if isStale { Circle().fill(Color.white) }
                         ChipFill(color: color, isStale: isStale)
                     }
+                    .offset(x: PageMetrics.chipDiscOverhang, y: PageMetrics.chipDiscOverhang)
             }
     }
 }
