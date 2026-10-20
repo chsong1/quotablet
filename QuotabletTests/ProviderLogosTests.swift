@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-// The tests draw invented shapes only. No test, fixture or asset in this repository holds a real company logo.
+// The tests draw invented shapes only. The real logos in this repository are the bundled company marks, and only AccountCompanyTests read them.
 private struct SyntheticLogo {
     var canvas = CGSize(width: 512, height: 256)
     var mark = CGRect(x: 128, y: 32, width: 256, height: 128)

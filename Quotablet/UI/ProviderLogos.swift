@@ -1,6 +1,7 @@
 import AppKit
 
-// Quotablet ships no logos. Their owners do not license the marks with this project, so the app draws files the user installs.
+// Quotablet ships no logos of the AI providers. Their owners do not license the marks with this project, so the app draws files the user installs.
+// The only logos it does ship are the marks of the companies behind an account's email domain (`CompanyLogos`), and it draws those through `ProviderLogo` too.
 
 enum LogoAppearance: Sendable {
     case dark

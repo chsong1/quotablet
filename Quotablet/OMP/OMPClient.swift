@@ -112,6 +112,7 @@ struct OMPClient: Sendable {
                 provider: report.provider,
                 sourceAccount: sourceAccount,
                 privateDisplayLabel: privateDisplayLabel,
+                emailDomain: AccountEmail.domain(of: report.metadata?.email),
                 fetchedAt: report.fetchedAt.date,
                 resetCredits: report.resetCredits?.availableCount,
                 quotas: quotas
