@@ -8,6 +8,16 @@ private enum PageMetrics {
     static let rowSpacing: CGFloat = 8
     static let rowPadding: CGFloat = 8
     static let chip: CGFloat = 24
+    // The badge of an account whose email domain has a logo keeps the 24 pt footprint of the plain number. Its plate is 2 pt short of the footprint
+    // on the right and below, where the number's disc sits. Every mark is fitted into a box set toward the plate's upper left: one taller than wide
+    // fills the box's height and a wider one its width, so the disc and the ring clear it whatever its shape.
+    static let chipPlate: CGFloat = 22
+    static let chipRing: CGFloat = 1.25
+    static let chipMarkHeight: CGFloat = 9.5
+    static let chipMarkMaxWidth: CGFloat = 10.2
+    static let chipMarkOffset = CGSize(width: -1, height: -1.8)
+    static let chipDisc: CGFloat = 10.5
+    static let chipDiscDigits: CGFloat = 7
     // The width of a window's name on a card. The money line and the product usage under the windows line up with its bar.
     static let windowName: CGFloat = 96
 
@@ -171,6 +181,16 @@ struct ProviderPage: View {
         layout == .flower ? QuotaPalette.color(at: account.number - 1) : color
     }
 
+    // The company whose logo the account's badge wears. Nil while identifiers are hidden, and nil when the app has no logo file for the company,
+    // so the badge falls back to its number and the label never names a logo that the badge does not show.
+    private func badgeCompany(of account: AccountDetail) -> AccountCompany? {
+        guard
+            let company = account.badgeCompany(revealingIdentifiers: showsAccountLabels),
+            CompanyLogos.logo(for: company) != nil
+        else { return nil }
+        return company
+    }
+
     private var compactRows: some View {
         VStack(spacing: 3) {
             HStack(spacing: PageMetrics.rowSpacing) {
@@ -195,6 +215,7 @@ struct ProviderPage: View {
                             columns: detail.windowColumns,
                             label: accountLabel(account),
                             showsLabel: showsAccountLabels,
+                            company: badgeCompany(of: account),
                             now: now
                         )
                     }
@@ -209,7 +230,13 @@ struct ProviderPage: View {
         ScrollView {
             VStack(spacing: 10) {
                 ForEach(detail.accountsByUrgency, id: \.number) { account in
-                    AccountCard(account: account, color: chipColor(for: account), label: accountLabel(account), now: now)
+                    AccountCard(
+                        account: account,
+                        color: chipColor(for: account),
+                        label: accountLabel(account),
+                        company: badgeCompany(of: account),
+                        now: now
+                    )
                 }
                 problemRows
             }
@@ -264,29 +291,86 @@ private struct StaleKey: View {
     }
 }
 
-// The account's number in its petal's color, so a row finds its petal by color and number.
-private struct AccountChip: View {
+// The account's number in its petal's color, so a row finds its petal by color and number. An account whose email domain has a logo wears the
+// logo instead: the mark on a white plate ringed in the petal's color, and the number in a small disc of that color on the plate's corner.
+// The badge keeps the footprint of the plain one. The mark is drawn as its file provides it, so the petal's color and staleness touch only
+// the ring and the disc.
+struct AccountChip: View {
     let number: Int
+    // Nil for the plain number. The page passes a company only while identifiers are revealed, because a logo names where the account's email
+    // lives or who employs its user.
+    let company: AccountCompany?
     let color: Color
     let isStale: Bool
 
     var body: some View {
+        if let company, let logo = CompanyLogos.logo(for: company) {
+            companyBadge(logo)
+        } else {
+            plainBadge
+        }
+    }
+
+    private var plainBadge: some View {
         Text("\(number)")
             .font(.system(size: 12, weight: .heavy, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(isStale ? Color.primary : PetalLook.inkOnColor)
             .frame(width: PageMetrics.chip, height: PageMetrics.chip)
-            .background {
-                if isStale {
-                    Circle().fill(color.opacity(PetalLook.trackOpacity))
-                    Circle().fill(color)
-                        .saturation(PetalLook.staleSaturation)
-                        .opacity(PetalLook.staleOpacity)
-                        .mask { StripeBands() }
-                } else {
-                    Circle().fill(color)
-                }
+            .background { ChipFill(color: color, isStale: isStale) }
+    }
+
+    private func companyBadge(_ logo: ProviderLogo) -> some View {
+        let mark = LogoFit.size(aspectRatio: logo.aspectRatio, height: PageMetrics.chipMarkHeight, maxWidth: PageMetrics.chipMarkMaxWidth)
+        return ChipFill(color: color, isStale: isStale)
+            .frame(width: PageMetrics.chipPlate, height: PageMetrics.chipPlate)
+            .overlay {
+                Circle()
+                    .fill(Color.white)
+                    .padding(PageMetrics.chipRing)
+                    .overlay {
+                        Image(nsImage: logo.artwork(height: mark.height))
+                            .renderingMode(.original)
+                            .resizable()
+                            .frame(width: mark.width, height: mark.height)
+                            .offset(PageMetrics.chipMarkOffset)
+                    }
             }
+            .frame(width: PageMetrics.chip, height: PageMetrics.chip, alignment: .topLeading)
+            .overlay(alignment: .bottomTrailing) {
+                Text("\(number)")
+                    .font(.system(size: PageMetrics.chipDiscDigits, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(PetalLook.inkOnColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .frame(width: PageMetrics.chipDisc, height: PageMetrics.chipDisc)
+                    .background {
+                        // The disc rests on the plate and on the bare panel, so a stale fill needs a white base to show its stripes over.
+                        if isStale { Circle().fill(Color.white) }
+                        ChipFill(color: color, isStale: isStale)
+                    }
+            }
+    }
+}
+
+// How a chip is filled with its petal's color. A stale account's chip is a pale track under dimmed stripes, as its petal and its bars are.
+private struct ChipFill: View {
+    let color: Color
+    let isStale: Bool
+
+    var body: some View {
+        if isStale {
+            ZStack {
+                Circle().fill(color.opacity(PetalLook.trackOpacity))
+                Circle().fill(color)
+                    .saturation(PetalLook.staleSaturation)
+                    .opacity(PetalLook.staleOpacity)
+                    .mask { StripeBands() }
+            }
+        } else {
+            Circle().fill(color)
+        }
     }
 }
 
@@ -398,6 +482,8 @@ private struct AccountRow: View {
     let columns: [String]
     let label: String
     let showsLabel: Bool
+    // Nil for the plain number. The page passes a company only while identifiers are revealed.
+    let company: AccountCompany?
     let now: Date
 
     var body: some View {
@@ -431,14 +517,14 @@ private struct AccountRow: View {
         .padding(.vertical, 5)
         .statusCard(account.status, radius: 8)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(account.accessibilityLabel(accountLabel: label, now: now))
+        .accessibilityLabel(account.accessibilityLabel(accountLabel: label, now: now, company: company))
         .accessibilityIdentifier("quotablet.account-row.\(account.number)")
     }
 
     private var head: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                AccountChip(number: account.number, color: color, isStale: account.isStale)
+                AccountChip(number: account.number, company: company, color: color, isStale: account.isStale)
                 if let urgency = account.urgency {
                     StatusGlyph(urgency: urgency)
                 }
@@ -488,12 +574,14 @@ private struct AccountCard: View {
     let account: AccountDetail
     let color: Color
     let label: String
+    // Nil for the plain number. The page passes a company only while identifiers are revealed.
+    let company: AccountCompany?
     let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                AccountChip(number: account.number, color: color, isStale: account.isStale)
+                AccountChip(number: account.number, company: company, color: color, isStale: account.isStale)
                 Text(label)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
@@ -526,7 +614,7 @@ private struct AccountCard: View {
         .padding(12)
         .statusCard(account.status, radius: 10)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(account.accessibilityLabel(accountLabel: label, now: now))
+        .accessibilityLabel(account.accessibilityLabel(accountLabel: label, now: now, company: company))
         .accessibilityIdentifier("quotablet.account-row.\(account.number)")
     }
 }

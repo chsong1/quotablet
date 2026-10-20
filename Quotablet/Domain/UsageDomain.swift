@@ -198,6 +198,8 @@ struct UsageReportDraft: Equatable, Sendable {
     let provider: String
     let sourceAccount: SourceAccountIdentity?
     let privateDisplayLabel: String?
+    // The host of the account's email address, as `AccountEmail.domain(of:)` reads it. A draft built without one has none.
+    var emailDomain: String? = nil
     let fetchedAt: Date?
     let resetCredits: Int?
     let quotas: [UsageQuotaDraft]
@@ -305,6 +307,8 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
     let accountIdentity: AccountIdentity
     let sourceAccount: SourceAccountIdentity?
     let privateDisplayLabel: String?
+    // The host of the account's email address. The badge reads it only while identifiers are revealed. A report saved before it existed has none.
+    let emailDomain: String?
     let fetchedAt: Date?
     let resetCredits: Int?
     let quotas: [UsageQuota]
@@ -568,6 +572,7 @@ struct UsageSnapshot: Codable, Equatable, Sendable {
                 accountIdentity: accountIdentity,
                 sourceAccount: draft.sourceAccount,
                 privateDisplayLabel: draft.privateDisplayLabel,
+                emailDomain: draft.emailDomain,
                 fetchedAt: draft.fetchedAt,
                 resetCredits: draft.resetCredits,
                 quotas: quotas
@@ -853,9 +858,11 @@ struct AccountDetail: Equatable, Sendable {
     }
 
     // For example "Account 2, near limit, 7 day 91% used, resets in 3 days 23 hours; 5 hour 0% used, 2 reset credits available".
-    // Windows that need attention come first.
-    func accessibilityLabel(accountLabel: String, now: Date) -> String {
+    // Windows that need attention come first. A badge that wears a logo says so right after the account's name, with what the logo is, as in
+    // "person@gmail.com, Gmail email provider, account 2, near limit, ...", so the label never says more than the badge shows.
+    func accessibilityLabel(accountLabel: String, now: Date, company: AccountCompany? = nil) -> String {
         var parts = [accountLabel]
+        if let company { parts.append(company.spokenBadge(number: number)) }
         if let urgency { parts.append(urgency.label.lowercased()) }
         if !windows.isEmpty {
             let leading = windows.filter { $0.urgency == .exhausted } + windows.filter { $0.urgency == .nearLimit }

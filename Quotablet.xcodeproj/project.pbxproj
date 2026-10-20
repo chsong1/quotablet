@@ -30,6 +30,21 @@
 		A10000000000000000000016 /* ProviderFlower.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ProviderFlower.swift */; };
 		A10000000000000000000017 /* ProviderFlower.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ProviderFlower.swift */; };
 		A10000000000000000000018 /* ProviderFlowerTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* ProviderFlowerTests.swift */; };
+		A1000000000000000000001B /* AccountCompany.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* AccountCompany.swift */; };
+		A1000000000000000000001C /* AccountCompany.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* AccountCompany.swift */; };
+		A1000000000000000000001D /* CompanyLogos.swift in App Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* CompanyLogos.swift */; };
+		A1000000000000000000001E /* CompanyLogos.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* CompanyLogos.swift */; };
+		A1000000000000000000001F /* AccountCompanyTests.swift in Test Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* AccountCompanyTests.swift */; };
+		A10000000000000000000020 /* company-suresoft.png in App Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* company-suresoft.png */; };
+		A10000000000000000000021 /* company-suresoft.png in Test Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* company-suresoft.png */; };
+		A10000000000000000000022 /* company-gmail.png in App Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* company-gmail.png */; };
+		A10000000000000000000023 /* company-gmail.png in Test Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* company-gmail.png */; };
+		A10000000000000000000024 /* company-kakao.png in App Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* company-kakao.png */; };
+		A10000000000000000000025 /* company-kakao.png in Test Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* company-kakao.png */; };
+		A10000000000000000000026 /* company-naver.png in App Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* company-naver.png */; };
+		A10000000000000000000027 /* company-naver.png in Test Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* company-naver.png */; };
+		A10000000000000000000028 /* company-apple.png in App Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* company-apple.png */; };
+		A10000000000000000000029 /* company-apple.png in Test Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* company-apple.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -51,6 +66,14 @@
 		B10000000000000000000010 /* ProviderLogosTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderLogosTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000011 /* ProviderFlower.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderFlower.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* ProviderFlowerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderFlowerTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000014 /* AccountCompany.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountCompany.swift; sourceTree = "<group>"; };
+		B10000000000000000000015 /* CompanyLogos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanyLogos.swift; sourceTree = "<group>"; };
+		B10000000000000000000016 /* AccountCompanyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountCompanyTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000017 /* company-suresoft.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "company-suresoft.png"; sourceTree = "<group>"; };
+		B10000000000000000000018 /* company-gmail.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "company-gmail.png"; sourceTree = "<group>"; };
+		B10000000000000000000019 /* company-kakao.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "company-kakao.png"; sourceTree = "<group>"; };
+		B1000000000000000000001A /* company-naver.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "company-naver.png"; sourceTree = "<group>"; };
+		B1000000000000000000001B /* company-apple.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "company-apple.png"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,14 +108,16 @@
 				D10000000000000000000007 /* Store */,
 				D10000000000000000000008 /* UI */,
 				D10000000000000000000009 /* App */,
+				D1000000000000000000000B /* Resources */,
 			);
 		};
-		D10000000000000000000005 /* Domain */ = {isa = PBXGroup; path = Domain; sourceTree = "<group>"; children = (B10000000000000000000001 /* UsageDomain.swift */,); };
+		D10000000000000000000005 /* Domain */ = {isa = PBXGroup; path = Domain; sourceTree = "<group>"; children = (B10000000000000000000001 /* UsageDomain.swift */, B10000000000000000000014 /* AccountCompany.swift */,); };
 		D10000000000000000000006 /* OMP */ = {isa = PBXGroup; path = OMP; sourceTree = "<group>"; children = (B10000000000000000000002 /* OMPClient.swift */,); };
 		D10000000000000000000007 /* Store */ = {isa = PBXGroup; path = Store; sourceTree = "<group>"; children = (B10000000000000000000003 /* AppPersistence.swift */, B10000000000000000000004 /* UsageStore.swift */,); };
-		D10000000000000000000008 /* UI */ = {isa = PBXGroup; path = UI; sourceTree = "<group>"; children = (B10000000000000000000005 /* UsagePanel.swift */, B1000000000000000000000D /* ProviderMenuBarRenderer.swift */, B1000000000000000000000E /* ProviderLogos.swift */, B10000000000000000000013 /* ProviderPage.swift */, B10000000000000000000011 /* ProviderFlower.swift */,); };
+		D10000000000000000000008 /* UI */ = {isa = PBXGroup; path = UI; sourceTree = "<group>"; children = (B10000000000000000000005 /* UsagePanel.swift */, B1000000000000000000000D /* ProviderMenuBarRenderer.swift */, B1000000000000000000000E /* ProviderLogos.swift */, B10000000000000000000013 /* ProviderPage.swift */, B10000000000000000000011 /* ProviderFlower.swift */, B10000000000000000000015 /* CompanyLogos.swift */,); };
 		D10000000000000000000009 /* App */ = {isa = PBXGroup; path = App; sourceTree = "<group>"; children = (B10000000000000000000006 /* QuotabletApp.swift */,); };
-		D10000000000000000000003 /* QuotabletTests */ = {isa = PBXGroup; path = QuotabletTests; sourceTree = "<group>"; children = (B10000000000000000000007 /* UsageDomainTests.swift */, B10000000000000000000008 /* UsageStoreTests.swift */, B10000000000000000000009 /* OMPClientTests.swift */, B10000000000000000000010 /* ProviderLogosTests.swift */, B10000000000000000000012 /* ProviderFlowerTests.swift */,); };
+		D1000000000000000000000B /* Resources */ = {isa = PBXGroup; path = Resources; sourceTree = "<group>"; children = (B10000000000000000000017 /* company-suresoft.png */, B10000000000000000000018 /* company-gmail.png */, B10000000000000000000019 /* company-kakao.png */, B1000000000000000000001A /* company-naver.png */, B1000000000000000000001B /* company-apple.png */,); };
+		D10000000000000000000003 /* QuotabletTests */ = {isa = PBXGroup; path = QuotabletTests; sourceTree = "<group>"; children = (B10000000000000000000007 /* UsageDomainTests.swift */, B10000000000000000000008 /* UsageStoreTests.swift */, B10000000000000000000009 /* OMPClientTests.swift */, B10000000000000000000010 /* ProviderLogosTests.swift */, B10000000000000000000012 /* ProviderFlowerTests.swift */, B10000000000000000000016 /* AccountCompanyTests.swift */,); };
 		D10000000000000000000004 /* Products */ = {isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (B1000000000000000000000A /* Quotablet.app */, B1000000000000000000000B /* QuotabletTests.xctest */,); };
 /* End PBXGroup section */
 
@@ -146,8 +171,8 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		E10000000000000000000005 /* App Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		E10000000000000000000006 /* Test Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000005 /* App Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000020 /* company-suresoft.png in App Resources */, A10000000000000000000022 /* company-gmail.png in App Resources */, A10000000000000000000024 /* company-kakao.png in App Resources */, A10000000000000000000026 /* company-naver.png in App Resources */, A10000000000000000000028 /* company-apple.png in App Resources */,); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000006 /* Test Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000021 /* company-suresoft.png in Test Resources */, A10000000000000000000023 /* company-gmail.png in Test Resources */, A10000000000000000000025 /* company-kakao.png in Test Resources */, A10000000000000000000027 /* company-naver.png in Test Resources */, A10000000000000000000029 /* company-apple.png in Test Resources */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -165,6 +190,8 @@
 				A10000000000000000000011 /* ProviderLogos.swift in App Sources */,
 				A10000000000000000000019 /* ProviderPage.swift in App Sources */,
 				A10000000000000000000016 /* ProviderFlower.swift in App Sources */,
+				A1000000000000000000001B /* AccountCompany.swift in App Sources */,
+				A1000000000000000000001D /* CompanyLogos.swift in App Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -185,6 +212,9 @@
 				A1000000000000000000001A /* ProviderPage.swift in Test Sources */,
 				A10000000000000000000017 /* ProviderFlower.swift in Test Sources */,
 				A10000000000000000000018 /* ProviderFlowerTests.swift in Test Sources */,
+				A1000000000000000000001C /* AccountCompany.swift in Test Sources */,
+				A1000000000000000000001E /* CompanyLogos.swift in Test Sources */,
+				A1000000000000000000001F /* AccountCompanyTests.swift in Test Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
