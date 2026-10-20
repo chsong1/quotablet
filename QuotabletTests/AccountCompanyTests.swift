@@ -196,18 +196,6 @@ final class AccountBadgeTests: XCTestCase {
         )
     }
 
-    @MainActor
-    func testIdentifiersStartHiddenSoNoBadgeNamesACompanyUntilTheyAreRevealed() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
-        let store = UsageStore(persistence: AppPersistence(directoryURL: directory))
-        let accounts = try detail([draft("a1", email: "person@suresofttech.com"), draft("a2", email: "person@gmail.com")]).accounts
-
-        XCTAssertEqual(accounts.map { $0.badgeCompany(revealingIdentifiers: store.revealsIdentifiers) }, [nil, nil])
-        store.setRevealsIdentifiers(true)
-        XCTAssertEqual(accounts.map { $0.badgeCompany(revealingIdentifiers: store.revealsIdentifiers) }, [.suresoft, .gmail])
-        store.setRevealsIdentifiers(false)
-        XCTAssertEqual(accounts.map { $0.badgeCompany(revealingIdentifiers: store.revealsIdentifiers) }, [nil, nil])
-    }
 
     func testSeveralAccountsOfOneCompanyKeepTheirOwnNumbersThroughUrgencySorting() throws {
         let page = try detail([

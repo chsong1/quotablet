@@ -27,7 +27,7 @@ final class UsageStore {
     private(set) var persistenceWarning = false
     private(set) var executablePath: String?
     private(set) var logos = ProviderLogoCatalog.empty
-    private(set) var revealsIdentifiers = false
+    private(set) var revealsIdentifiers = true
     private(set) var presentationDate = Date()
 
     @ObservationIgnored private let persistence: AppPersistence
