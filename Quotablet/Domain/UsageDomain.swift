@@ -214,6 +214,16 @@ struct QuotaRowID: Codable, Hashable, Sendable {
     let quotaOrdinal: Int
 }
 
+// The ids OMP gives the quotas of Grok's shared credit pool (OMP 18.12.3, packages/ai/src/usage/xai-oauth.ts). The pool and the row of each product
+// that draws on it carry the same shared flag and the same window, so only their ids tell them apart. No other provider is known to report a pool
+// this way, so no other id reads as one.
+enum GrokPoolIDs {
+    // The weekly credit pool. OMP's own capacity policy for the provider takes it ahead of the legacy monthly counter "xai-oauth:included:1mo".
+    static let pool = "xai-oauth:credits:1w"
+    // "xai-oauth:product:<product>:1w", one for each product that has drawn on the pool.
+    static let productPrefix = "xai-oauth:product:"
+}
+
 struct UsageQuota: Codable, Equatable, Identifiable, Sendable {
     let id: QuotaRowID
     let limitID: String
@@ -256,7 +266,37 @@ struct UsageQuota: Codable, Equatable, Identifiable, Sendable {
         return restatesWindow ? nil : detail
     }
 
-    var isScoped: Bool { scopeDetail != nil }
+    // OMP's own capacity roll-up reads the tier in the scope of a Claude or Codex quota as a meter of its own
+    // (OMP 18.12.3, packages/coding-agent/src/cli/usage-cli.ts), as in "Claude 7 Day (Fable)" beside the whole "Claude 7 Day".
+    // A Codex meter is flagged shared like its whole window (packages/ai/src/usage/openai-codex.ts), so the flag does not tell them apart.
+    // Other providers use the tier for something else, such as the name of a plan, so the tier narrows a quota only for these two.
+    private static let tierMeterProviders: Set<String> = ["anthropic", "openai-codex"]
+
+    private var isTierMeter: Bool {
+        guard let scope, Self.tierMeterProviders.contains(scope.provider), let tier = scope.tier else { return false }
+        return !tier.allSatisfy(\.isWhitespace)
+    }
+
+    // Narrower than the whole limit of its window: its label names a scope, or OMP gives it a meter of its own.
+    var isScoped: Bool { scopeDetail != nil || isTierMeter }
+
+    // The weekly credit pool that Grok's products share.
+    var isSharedPool: Bool { limitID == GrokPoolIDs.pool }
+
+    // One product's use of the shared pool, such as "Cursor (Weekly)". The product draws on the pool and has no limit of its own. OMP gives the row
+    // a remaining amount too, but that is only the rest of 100%, so nothing reads it: what is left belongs to the pool.
+    var isProductUsage: Bool { limitID.hasPrefix(GrokPoolIDs.productPrefix) }
+
+    // The product's name as the label says it, without the parenthetical that restates the window: "Cursor" for "Cursor (Weekly)".
+    var productName: String {
+        guard
+            scopeDetail == nil,
+            let close = label.lastIndex(of: ")"),
+            let open = label[..<close].lastIndex(of: "(")
+        else { return label }
+        let name = label[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? label : name
+    }
 }
 
 struct UsageReport: Codable, Equatable, Identifiable, Sendable {
@@ -280,8 +320,19 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    // The quotas that are limits of the account, in report order. A product's use of the shared pool is no limit,
+    // so it never stands for the account and never flags it.
+    var limits: [UsageQuota] {
+        quotas.filter { !$0.isProductUsage }
+    }
+
+    // What each product has used of the shared pool, as OMP reports it, in report order.
+    var productUsage: [UsageQuota] {
+        quotas.filter(\.isProductUsage)
+    }
+
     var topUrgency: QuotaUrgency? {
-        quotas.compactMap(\.urgency).min()
+        limits.compactMap(\.urgency).min()
     }
 
     var accountStatus: AccountStatus {
@@ -595,11 +646,13 @@ extension UsageSnapshot {
     }
 
     // The one quota that stands for an account's whole limit: the longest window that is not narrowed to a scope such as a model.
+    // A product's use of the shared pool is no limit, so it is never picked, whatever its share. Grok's weekly pool comes ahead of every other quota,
+    // as in OMP's own capacity policy for the provider, so the legacy monthly counter that can stand beside it does not outrank it by being longer.
     private func capacityQuota(of report: UsageReport) -> SelectedQuota? {
-        report.quotas
+        let candidates = report.limits
             .filter { $0.amount?.progress != nil && !$0.isScoped }
             .map { SelectedQuota(report: report, quota: $0) }
-            .min(by: Self.isBetterCapacityQuota)
+        return candidates.first { $0.quota.isSharedPool } ?? candidates.min(by: Self.isBetterCapacityQuota)
     }
 
     // The longest window wins. Windows of one length go to the most used quota, then to the stable order.
@@ -663,6 +716,45 @@ struct WindowEntry: Equatable, Sendable {
     let usedFraction: Double?
     let urgency: QuotaUrgency?
     let resetsAt: Date?
+    // What the quota has used in dollars, when it counts money. Nil for a quota that is only a share. The amount stands beside the share and is never added to it.
+    var money: MoneyUsage?
+}
+
+// What a quota in US dollars has used and may use. A budget in dollars and a share of a pool are different quantities, so a page shows both
+// side by side and nothing adds one to the other. Only a unit that OMP names USD reads as money: any other unit has no known currency.
+struct MoneyUsage: Equatable, Sendable {
+    let used: Double
+    // Nil when OMP gives no budget.
+    let limit: Double?
+
+    init?(_ amount: UsageAmount?) {
+        guard let amount, amount.unit == .usd else { return nil }
+        let limit = amount.limit.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        // A quota that reports only what remains still says what it used.
+        guard
+            let used = amount.used ?? limit.flatMap({ limit in amount.remaining.map { limit - $0 } }),
+            used.isFinite, used >= 0
+        else { return nil }
+        self.used = used
+        self.limit = limit
+    }
+
+    // For example "$12.40 of $553.95", or "$12.40 used" when OMP gives no budget.
+    func text(locale: Locale = .current) -> String {
+        let spent = UsageFormatting.dollars(used, locale: locale)
+        return limit.map { "\(spent) of \(UsageFormatting.dollars($0, locale: locale))" } ?? "\(spent) used"
+    }
+}
+
+// What one product has used of the shared pool, as OMP reports it. OMP does not say what the percent is a percent of, so the figure stands alone:
+// nothing adds the products up, sets them against the pool, or works out what is left.
+struct ProductUsageEntry: Equatable, Sendable {
+    let name: String
+    // Nil when the quota reports no usable figure.
+    let usedFraction: Double?
+
+    // For example "Cursor 22%".
+    var phrase: String { "\(name) \(UsageFormatting.usedPercent(usedFraction))" }
 }
 
 // What a window's cell says. The rule lives here so the compact row and the roomy card cannot disagree.
@@ -688,6 +780,7 @@ extension WindowEntry {
     // For example "7 day 91% used, resets in 3 days 23 hours".
     func spokenSummary(now: Date) -> String {
         var parts = ["\(name.spoken) \(usedFraction.map { "\(UsageFormatting.usedPercent($0)) used" } ?? "usage unknown")"]
+        if let money { parts.append(money.text()) }
         switch UsageFormatting.countdown(to: resetsAt, now: now) {
         case .remaining(_, let spoken): parts.append("resets in \(spoken)")
         case .passed: parts.append("reset passed, recheck")
@@ -697,7 +790,7 @@ extension WindowEntry {
     }
 }
 
-// One account on its provider's page: its petal, its row, and every window it reports.
+// One account on its provider's page: its petal, its row, every window it reports, and what its products have used of the shared pool.
 struct AccountDetail: Equatable, Sendable {
     let report: UsageReport
     // Report order within the provider, counted from 1.
@@ -707,6 +800,8 @@ struct AccountDetail: Equatable, Sendable {
     let capacityFraction: Double?
     let isStale: Bool
     let windows: [WindowEntry]
+    // What the account's products have used of the shared pool, as OMP reports it, in report order. Empty for an account that reports none.
+    let productUsage: [ProductUsageEntry]
 
     var urgency: QuotaUrgency? { report.topUrgency }
     var status: AccountStatus { report.accountStatus }
@@ -717,6 +812,15 @@ struct AccountDetail: Equatable, Sendable {
     // For example "2 reset credits available".
     var resetCreditsPhrase: String? {
         resetCredits.map { "\($0) reset credit\($0 == 1 ? "" : "s") available" }
+    }
+
+    // The wording of product usage. OMP reports the figures and says nothing about what they are a share of, so the page names the source and no more.
+    static let productUsageTitle = "Product usage"
+    static let productUsageSource = "Reported by OMP"
+
+    // For example "Cursor 22% · GrokBot 1% · API 1%". Nil when the account reports no product usage.
+    var productUsageSummary: String? {
+        productUsage.isEmpty ? nil : productUsage.map(\.phrase).joined(separator: " · ")
     }
 
     // The used share of the window closest to running out. Nil when no window has a figure.
@@ -757,6 +861,9 @@ struct AccountDetail: Equatable, Sendable {
             let leading = windows.filter { $0.urgency == .exhausted } + windows.filter { $0.urgency == .nearLimit }
             let rest = windows.filter { $0.urgency == nil }
             parts.append((leading + rest).map { $0.spokenSummary(now: now) }.joined(separator: "; "))
+        }
+        if !productUsage.isEmpty {
+            parts.append("product usage reported by OMP: \(productUsage.map(\.phrase).joined(separator: "; "))")
         }
         if isStale { parts.append("stale") }
         if let resetCreditsPhrase { parts.append(resetCreditsPhrase) }
@@ -828,16 +935,24 @@ extension UsageSnapshot {
                     number: offset + 1,
                     capacityFraction: capacity[report.id]?.amount?.progress,
                     isStale: report.isStale(at: now),
-                    windows: Self.windowEntries(of: report)
+                    windows: Self.windowEntries(of: report),
+                    productUsage: report.productUsage.map { ProductUsageEntry(name: $0.productName, usedFraction: $0.amount?.progress) }
                 )
             }
         return ProviderDetail(usage: usage, accounts: accounts, problems: problemDetails(of: provider))
     }
 
     private static func windowEntries(of report: UsageReport) -> [WindowEntry] {
-        let names = UsageFormatting.windowNames(for: report.quotas, provider: report.provider)
-        return zip(report.quotas, names).map { quota, name in
-            WindowEntry(name: name, usedFraction: quota.usedShare, urgency: quota.urgency, resetsAt: quota.resetsAt)
+        let limits = report.limits
+        let names = UsageFormatting.windowNames(for: limits, provider: report.provider)
+        return zip(limits, names).map { quota, name in
+            WindowEntry(
+                name: quota.isSharedPool ? UsageFormatting.sharedPoolName(of: quota) : name,
+                usedFraction: quota.usedShare,
+                urgency: quota.urgency,
+                resetsAt: quota.resetsAt,
+                money: MoneyUsage(quota.amount)
+            )
         }
     }
 
@@ -1021,6 +1136,17 @@ enum UsageFormatting {
             taken.insert("\(name.short) \(count)")
             return WindowName(short: "\(name.short) \(count)", spoken: "\(name.spoken) \(count)")
         }
+    }
+
+    // The shared pool is named for what it is. Its window length stays in the spoken name, and its reset time is on its row.
+    static func sharedPoolName(of quota: UsageQuota) -> WindowName {
+        let length = spokenDuration(milliseconds: quota.window?.durationMilliseconds)
+        return WindowName(short: "Shared pool", spoken: [length, "shared pool"].compactMap { $0 }.joined(separator: " "))
+    }
+
+    // Money in US dollars as the reader's locale writes it, such as "$553.95".
+    static func dollars(_ value: Double, locale: Locale = .current) -> String {
+        value.formatted(.currency(code: "USD").locale(locale))
     }
 
     // What a label says besides the provider and its window, such as "Credits" in "SuperGrok Weekly Credits". A word fused to the

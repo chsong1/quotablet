@@ -352,6 +352,29 @@ final class UsageStoreTests: XCTestCase {
         await store.shutdown()
     }
 
+    func testASavedSnapshotKeepsItsSharedPoolAndProductUsageWhenLoadedAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = AppPersistence(directoryURL: directory)
+        let saved = UsageSnapshot(
+            generatedAt: fetchedAt,
+            reportDrafts: [RealisticFixture.sharedPoolGrok(pool: 20, products: [("Cursor", 95), ("API", 1)])]
+        )
+
+        let didSave = await persistence.save(snapshot: saved)
+        let stored = await persistence.load()
+
+        // Nothing about the pool is stored. It is read from the ids and scopes a snapshot already holds, so one saved by an earlier build reads the same way.
+        let loaded = try XCTUnwrap(stored.snapshot)
+        let usage = try XCTUnwrap(loaded.providerUsage(now: fetchedAt).first)
+        let account = try XCTUnwrap(loaded.providerDetail(of: "xai-oauth", now: fetchedAt)).accounts[0]
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(loaded, saved)
+        XCTAssertEqual(usage.measured.map(\.quota.limitID), ["xai-oauth:credits:1w"])
+        XCTAssertEqual(try XCTUnwrap(usage.usedFraction), 0.2, accuracy: 0.0001)
+        XCTAssertEqual(account.productUsage.map(\.phrase), ["Cursor 95%", "API 1%"])
+    }
+
     private func sampleSnapshot(accountID: String) -> UsageSnapshot {
         sampleSnapshot(accountIDs: [accountID])
     }
