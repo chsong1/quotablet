@@ -147,21 +147,21 @@ struct UsagePanel: View {
     }
 
     // The front page, with one provider's page over it while the route names that provider. The front page stays under the open page,
-    // so the petal that opened grows out of its place and shrinks back into it.
+    // so the emblem that opened grows out of its place and shrinks back into it.
     private func pages(of snapshot: UsageSnapshot, now: Date) -> some View {
-        let providers = snapshot.providerUsage(now: now)
+        let details = snapshot.providerDetails(now: now)
         let current = route.resolved(in: snapshot)
         let namespace: Namespace.ID? = reduceMotion ? nil : heroNamespace
         return ZStack {
-            if FlowerLayout.forItemCount(providers.count) == .flower {
-                ProviderFlower(providers: providers, logos: store.logos, route: current, namespace: namespace, open: open)
+            if let columns = EmblemGrid.columns(forProviderCount: details.count) {
+                ProviderEmblems(details: details, columns: columns, logos: store.logos, route: current, namespace: namespace, open: open)
             } else {
-                ProviderList(providers: providers, logos: store.logos, route: current, namespace: namespace, open: open)
+                ProviderList(providers: details.map(\.usage), logos: store.logos, route: current, namespace: namespace, open: open)
             }
-            if case .provider(let id) = current, let detail = snapshot.providerDetail(of: id, now: now) {
+            if case .provider(let id) = current, let index = details.firstIndex(where: { $0.usage.provider == id }) {
                 ProviderPage(
-                    detail: detail,
-                    color: QuotaPalette.color(at: providers.firstIndex { $0.provider == id } ?? 0),
+                    detail: details[index],
+                    color: QuotaPalette.color(at: index),
                     logos: store.logos,
                     now: now,
                     accountLabel: { accountLabel(for: $0.report, number: $0.number) },
