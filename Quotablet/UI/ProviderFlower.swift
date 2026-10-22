@@ -9,37 +9,40 @@ enum FlowerLayout: Equatable {
 
     static let petalRange = 3...8
 
-    // The one rule for every flower in the panel: the front page's providers and a provider page's accounts.
+    // The rule for a provider page's flower of accounts. The front page lays its providers out with `EmblemGrid`.
     static func forItemCount(_ count: Int) -> FlowerLayout {
         petalRange.contains(count) ? .flower : .list
     }
 }
 
-// What one petal draws. The petals follow their items' order, so a petal's position is its item's rank.
+// What one petal draws. The petals follow their accounts' order, so a petal's position is its account's number.
 struct Petal: Equatable, Sendable {
-    // Nil when nothing is measured. The petal then has an outline and no fill.
+    // Nil when nothing is measured. The petal then has a dashed outline and no fill.
     let usedFraction: Double?
     let isStale: Bool
-    // Inside the petal: a provider's used percent, or an account's number.
+    // The account's number, which a petal on the provider's page carries.
     let text: String
-    let badge: AttentionBadge?
-    // How many of the provider's accounts need the user to sign in again. Zero draws no sign-in badge.
-    let signInCount: Int
-
-    init(_ usage: ProviderUsage) {
-        usedFraction = usage.usedFraction
-        isStale = usage.isStale
-        text = UsageFormatting.usedPercent(usage.usedFraction)
-        badge = usage.attention.badge
-        signInCount = usage.problemCount
-    }
+    let urgency: QuotaUrgency?
 
     init(_ account: AccountDetail) {
         usedFraction = account.capacityFraction
         isStale = account.isStale
         text = String(account.number)
-        badge = account.urgency.map { AttentionBadge(urgency: $0, count: 1) }
-        signInCount = 0
+        urgency = account.urgency
+    }
+
+    private init(usedFraction: Double?, isStale: Bool, text: String, urgency: QuotaUrgency?) {
+        self.usedFraction = usedFraction
+        self.isStale = isStale
+        self.text = text
+        self.urgency = urgency
+    }
+
+    // The petals of a provider's emblem: one for each account. A provider that OMP names only through problem accounts has no report,
+    // so its emblem is one unmeasured ring.
+    static func emblem(of detail: ProviderDetail) -> [Petal] {
+        guard !detail.accounts.isEmpty else { return [Petal(usedFraction: nil, isStale: false, text: "", urgency: nil)] }
+        return detail.accounts.map(Petal.init)
     }
 }
 
@@ -51,12 +54,20 @@ extension ProviderUsage {
     }
 }
 
-// One petal of a flower in a y-down plane such as a SwiftUI canvas. Index 0 is centered at 12 o'clock and
-// the indexes run clockwise on screen.
+// One petal of a flower in a y-down plane such as a SwiftUI canvas. Index 0 is centered at 12 o'clock and the indexes run clockwise on screen.
+// A petal is pointed at both ends and widest a little past its middle. A flower of one petal is a band around the hole, set near the rim
+// so a lone account does not outweigh a flower of several.
 struct PetalGeometry: Equatable, Sendable {
-    private static let innerRadiusRatio: CGFloat = 0.24
-    private static let outerCornerRatio: CGFloat = 0.16
-    private static let innerCornerRatio: CGFloat = 0.06
+    private static let innerRadiusRatio: CGFloat = 0.28
+    private static let ringInnerRadiusRatio: CGFloat = 0.6
+    // The widest a petal grows on each side of its axis, as a share of its length. Without the cap two or three petals would swell into disks.
+    private static let halfWidthRatio: CGFloat = 0.42
+    // Under one, the sides swell outward, so a petal reads as full rather than as a thin leaf.
+    private static let bulge: CGFloat = 0.75
+    // Over one, the widest point moves out past the middle.
+    private static let flare: CGFloat = 1.25
+    private static let gapDegrees: CGFloat = 6
+    private static let outlineSteps = 72
     private static let integrationSteps = 128
     private static let bisectionSteps = 48
 
@@ -65,96 +76,61 @@ struct PetalGeometry: Equatable, Sendable {
     let outerRadius: CGFloat
 
     init(petalCount: Int, index: Int, outerRadius: CGFloat) {
-        precondition(FlowerLayout.petalRange.contains(petalCount), "A flower has \(FlowerLayout.petalRange) petals.")
+        precondition(petalCount >= 1, "A flower has at least one petal.")
         precondition((0..<petalCount).contains(index), "A petal index must name one of the flower's petals.")
         self.petalCount = petalCount
         self.index = index
         self.outerRadius = outerRadius
     }
 
-    var innerRadius: CGFloat { outerRadius * Self.innerRadiusRatio }
-    var gapDegrees: CGFloat { 6 }
+    // Petals start at the edge of the hole that holds the logo. A ring starts farther out, past a gap of the provider's glow.
+    var innerRadius: CGFloat { outerRadius * (isRing ? Self.ringInnerRadiusRatio : Self.innerRadiusRatio) }
 
-    // A rounded corner is a circle tangent to the petal's radial side and to the inner or outer arc.
-    private struct Rounding {
-        let centerRadius: CGFloat
-        let radius: CGFloat
-        // Angle between the radial side and the circle's center, seen from the flower's center.
-        let offsetAngle: CGFloat
-        // Distance from the flower's center to the point where the circle leaves the radial side.
-        let edgeRadius: CGFloat
-
-        init(centerRadius: CGFloat, radius: CGFloat) {
-            self.centerRadius = centerRadius
-            self.radius = radius
-            offsetAngle = asin(radius / centerRadius)
-            edgeRadius = (centerRadius * centerRadius - radius * radius).squareRoot()
-        }
-
-        // How far the rounding pulls the petal's side in from its radial line, as an angle, at `rho` from the center.
-        // Only meaningful between `edgeRadius` and the arc the circle touches.
-        func inset(atRadius rho: CGFloat) -> CGFloat {
-            let cosine = (rho * rho + centerRadius * centerRadius - radius * radius) / (2 * rho * centerRadius)
-            return offsetAngle - acos(min(max(cosine, -1), 1))
-        }
+    // The hole in the middle of a flower, which holds the provider's logo whatever the petal count.
+    static func holeRadius(outerRadius: CGFloat) -> CGFloat {
+        outerRadius * innerRadiusRatio
     }
 
-    private var innerRounding: Rounding {
-        let radius = outerRadius * Self.innerCornerRatio
-        return Rounding(centerRadius: innerRadius + radius, radius: radius)
-    }
-
-    private var outerRounding: Rounding {
-        let radius = outerRadius * Self.outerCornerRatio
-        return Rounding(centerRadius: outerRadius - radius, radius: radius)
-    }
+    var isRing: Bool { petalCount == 1 }
 
     var axisAngle: CGFloat {
         -.pi / 2 + 2 * .pi * CGFloat(index) / CGFloat(petalCount)
     }
 
-    private var halfSpan: CGFloat {
-        (2 * .pi / CGFloat(petalCount) - gapDegrees * .pi / 180) / 2
+    // Half the angle a petal may take, which leaves half the gap on each side.
+    private var maxHalfSpan: CGFloat {
+        .pi / CGFloat(petalCount) - Self.gapDegrees * .pi / 360
+    }
+
+    // How far the petal reaches on each side of its axis at `rho` from the center, as an angle. Pi all round for a ring, and zero outside the petal.
+    func halfAngle(atRadius rho: CGFloat) -> CGFloat {
+        guard rho > innerRadius, rho < outerRadius else { return 0 }
+        if isRing { return .pi }
+        let length = outerRadius - innerRadius
+        let along = (rho - innerRadius) / length
+        let halfWidth = Self.halfWidthRatio * length * pow(sin(.pi * pow(along, Self.flare)), Self.bulge)
+        return min(asin(min(halfWidth / rho, 1)), maxHalfSpan)
     }
 
     func path(in center: CGPoint) -> CGPath {
-        let inner = innerRounding
-        let outer = outerRounding
-        let first = axisAngle - halfSpan
-        let last = axisAngle + halfSpan
+        let path = CGMutablePath()
+        if isRing {
+            // The two circles run in opposite directions, so the hole stays empty under the nonzero rule.
+            path.addArc(center: center, radius: outerRadius, startAngle: 0, endAngle: 2 * .pi, clockwise: false)
+            path.closeSubpath()
+            path.move(to: CGPoint(x: center.x + innerRadius, y: center.y))
+            path.addArc(center: center, radius: innerRadius, startAngle: 0, endAngle: -2 * .pi, clockwise: true)
+            path.closeSubpath()
+            return path
+        }
         func point(_ radius: CGFloat, _ angle: CGFloat) -> CGPoint {
             CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
         }
-
-        // Every arc but the inner one runs toward larger angles, which is clockwise on screen.
-        let path = CGMutablePath()
-        path.move(to: point(inner.edgeRadius, first))
-        path.addLine(to: point(outer.edgeRadius, first))
-        path.addArc(
-            center: point(outer.centerRadius, first + outer.offsetAngle), radius: outer.radius,
-            startAngle: first - .pi / 2, endAngle: first + outer.offsetAngle, clockwise: false
-        )
-        path.addArc(
-            center: center, radius: outerRadius,
-            startAngle: first + outer.offsetAngle, endAngle: last - outer.offsetAngle, clockwise: false
-        )
-        path.addArc(
-            center: point(outer.centerRadius, last - outer.offsetAngle), radius: outer.radius,
-            startAngle: last - outer.offsetAngle, endAngle: last + .pi / 2, clockwise: false
-        )
-        path.addLine(to: point(inner.edgeRadius, last))
-        path.addArc(
-            center: point(inner.centerRadius, last - inner.offsetAngle), radius: inner.radius,
-            startAngle: last + .pi / 2, endAngle: last - inner.offsetAngle + .pi, clockwise: false
-        )
-        path.addArc(
-            center: center, radius: innerRadius,
-            startAngle: last - inner.offsetAngle, endAngle: first + inner.offsetAngle, clockwise: true
-        )
-        path.addArc(
-            center: point(inner.centerRadius, first + inner.offsetAngle), radius: inner.radius,
-            startAngle: first + inner.offsetAngle + .pi, endAngle: first + 3 * .pi / 2, clockwise: false
-        )
+        let radii = (0...Self.outlineSteps).map { innerRadius + (outerRadius - innerRadius) * CGFloat($0) / CGFloat(Self.outlineSteps) }
+        // Out along the clockwise side to the tip, then back along the other side. Both sides meet the axis at the base and at the tip.
+        let out = radii.map { point($0, axisAngle + halfAngle(atRadius: $0)) }
+        let back = radii.reversed().dropFirst().dropLast().map { point($0, axisAngle - halfAngle(atRadius: $0)) }
+        path.addLines(between: out + back)
         path.closeSubpath()
         return path
     }
@@ -163,58 +139,27 @@ struct PetalGeometry: Equatable, Sendable {
         CGPoint(x: center.x + radius * cos(axisAngle), y: center.y + radius * sin(axisAngle))
     }
 
-    // Just inside the outer arc and a little clockwise of the axis, so a badge there leaves the tip clear for a logo.
-    func badgeCenter(in center: CGPoint) -> CGPoint {
-        badgePoint(atAngle: axisAngle + badgeOffsetAngle, in: center)
+    // Where a tip badge sits: on the petal's tip, or at the top of a ring.
+    func tipCenter(in center: CGPoint) -> CGPoint {
+        axisPoint(atRadius: outerRadius, in: center)
     }
 
-    // The same distance counterclockwise of the axis, so the sign-in badge sits clear of the status badge.
-    func signInBadgeCenter(in center: CGPoint) -> CGPoint {
-        badgePoint(atAngle: axisAngle - badgeOffsetAngle, in: center)
-    }
-
-    private var badgeOffsetAngle: CGFloat {
-        min(max(halfSpan * 0.5, 0.2), 0.38)
-    }
-
-    private func badgePoint(atAngle angle: CGFloat, in center: CGPoint) -> CGPoint {
-        let radius = outerRadius - 10
-        return CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
-    }
-
-    // Where a box of `size` centers to sit `gap` beyond the petal's tip, so the gap is even whatever the petal's angle.
-    func boxCenter(size: CGSize, beyondTipBy gap: CGFloat, in center: CGPoint) -> CGPoint {
-        let half = abs(cos(axisAngle)) * size.width / 2 + abs(sin(axisAngle)) * size.height / 2
-        return axisPoint(atRadius: outerRadius + gap + half, in: center)
-    }
-
-    // Integrates the petal's angular width over the rings inside `radius`. The rounded corners have no simple
-    // area once a disk cuts through them, so this stays numeric.
+    // Integrates the petal's angular width over the rings inside `radius`. The outline has no simple area once a disk cuts through it,
+    // so this stays numeric.
     func area(withinRadius radius: CGFloat) -> CGFloat {
         let limit = min(radius, outerRadius)
         guard limit > innerRadius else { return 0 }
-        let inner = innerRounding
-        let outer = outerRounding
-        let span = 2 * halfSpan
         let ringWidth = (limit - innerRadius) / CGFloat(Self.integrationSteps)
         var area: CGFloat = 0
         for ring in 0..<Self.integrationSteps {
             let rho = innerRadius + (CGFloat(ring) + 0.5) * ringWidth
-            let pulledIn: CGFloat
-            if rho < inner.edgeRadius {
-                pulledIn = inner.inset(atRadius: rho)
-            } else if rho > outer.edgeRadius {
-                pulledIn = outer.inset(atRadius: rho)
-            } else {
-                pulledIn = 0
-            }
-            area += (span - 2 * pulledIn) * rho * ringWidth
+            area += 2 * halfAngle(atRadius: rho) * rho * ringWidth
         }
         return area
     }
 
-    // Petals widen outward, so a radius that is linear in the fraction would understate small values and
-    // overstate large ones. This is the radius whose disk covers that fraction of the petal's area.
+    // Petals change width along their length, so a radius that is linear in the fraction would misstate the share. This is the radius
+    // whose disk covers that fraction of the petal's area.
     func fillRadius(forUsedFraction fraction: Double) -> CGFloat {
         guard fraction > 0 else { return innerRadius }
         guard fraction < 1 else { return outerRadius }
@@ -244,16 +189,10 @@ struct FlowerGeometry {
     }
 
     var center: CGPoint { CGPoint(x: diameter / 2, y: diameter / 2) }
-
-    // The petal that holds `point`, or nil over a gap, over the hole in the middle, or outside the flower.
-    // Hover and click both ask this, because the petals' frames overlap and only their outlines tell them apart.
-    func index(containing point: CGPoint) -> Int? {
-        petals.firstIndex { $0.path(in: center).contains(point) }
-    }
 }
 
 enum QuotaPalette {
-    // Petals next to each other contrast, so the order is part of the design. No color here is a red, orange, yellow, or green.
+    // Emblems next to each other contrast, so the order is part of the design. No color here is a red, orange, yellow, or green.
     // Those belong to the status badges, so a petal never reads as a status.
     private static let colors: [Color] = [.blue, .brown, .indigo, .teal, .gray, .cyan, slate, .purple]
 
@@ -285,9 +224,9 @@ enum LogoFit {
 
 // Names the pairs of views that grow or travel between the front page and a provider's page.
 enum PanelHero {
-    // The provider's logo, from beside its petal to the page's header.
+    // The provider's logo, from the middle of its emblem to the page's header.
     static func logo(_ provider: String) -> String { "logo.\(provider)" }
-    // The provider's petal or row, which the page's tint grows out of.
+    // The provider's emblem or row, which the page's tint grows out of.
     static func tint(_ provider: String) -> String { "tint.\(provider)" }
 }
 
@@ -312,47 +251,85 @@ extension QuotaUrgency {
         case .nearLimit: "exclamationmark.triangle.fill"
         }
     }
+
+    // A tip badge is too small for the outlined symbols, so it takes a bare glyph.
+    var tipSymbol: String {
+        switch self {
+        case .exhausted: "xmark"
+        case .nearLimit: "exclamationmark"
+        }
+    }
+
+    var badgeFill: Color {
+        switch self {
+        case .exhausted: Color(red: 0.80, green: 0.13, blue: 0.12)
+        case .nearLimit: Color(nsColor: .systemOrange)
+        }
+    }
+
+    var badgeInk: Color {
+        switch self {
+        case .exhausted: .white
+        case .nearLimit: PetalLook.inkOnColor
+        }
+    }
 }
 
 enum PetalLook {
-    static let trackOpacity = 0.22
+    static let trackOpacity = 0.16
+    static let trackStrokeOpacity = 0.45
+    // The fill fades toward the tip, so a petal reads as lit from the middle of the flower.
+    static let tipOpacity = 0.72
     static let staleOpacity = 0.55
     static let staleSaturation = 0.4
     static let outlineWidth: CGFloat = 1.5
     static let stripeThickness: CGFloat = 1.5
     static let fullFillOverhang: CGFloat = 2
     static let liftScale: CGFloat = 1.035
-    static let liftBrightness = 0.12
+    static let liftBrightness = 0.08
     // Over a petal's color the ink is near black, which stays legible on every palette color in both appearances.
     static let inkOnColor = Color.black.opacity(0.88)
 }
 
-private enum FlowerMetrics {
-    static let maxDiameter: CGFloat = 300
-    static let logoHeight: CGFloat = 18
-    static let logoMaxWidth: CGFloat = 36
-    static let logoGap: CGFloat = 7
-    // The petal that opens grows past the panel while it fades, and the others shrink away.
+private enum EmblemMetrics {
+    static let maxDiameter: CGFloat = 180
+    static let inset: CGFloat = 18
+    static let spacing: CGFloat = 14
+    static let captionGap: CGFloat = 4
+    static let captionHeight: CGFloat = 22
+    // A tip badge is centered on its petal's tip, so half of it stands past the emblem.
+    static let tipRoom: CGFloat = 9
+    // How far the glow behind the logo reaches, in radii of the hole.
+    static let haloReach: CGFloat = 2.6
+    // The emblem that opens grows past the panel while it fades, and the others shrink away.
     static let openedScale: CGFloat = 2.6
     static let othersScale: CGFloat = 0.9
+    // The petals unfold from this scale when the panel opens, one after another.
+    static let bloomStart: CGFloat = 0.35
+    static let bloomStagger = 0.045
 }
 
-// How large a petal's text is and how far from the center it sits. Fewer petals are wider, so they take larger text set nearer the middle.
+// How many emblems a row of the front page holds. Nil when there are too many providers for emblems to stay legible, so the front page lists them.
+enum EmblemGrid {
+    static func columns(forProviderCount count: Int) -> Int? {
+        switch count {
+        case 1: 1
+        case 2...4: 2
+        case 5...9: 3
+        default: nil
+        }
+    }
+}
+
+// How large an account's number is and how far from the center it sits. Fewer petals are wider, so they take larger digits.
 struct PetalLabelStyle: Equatable, Sendable {
     let size: CGFloat
-    // Of the flower's outer radius.
+    // Of the flower's outer radius. A petal is widest a little past its middle, which is where the digits sit.
     let radiusFraction: CGFloat
-
-    // A provider's used percent such as "100%". The sizes suit a flower 300 pt across and scale with the diameter.
-    static func percent(petalCount: Int, diameter: CGFloat) -> PetalLabelStyle {
-        let size: CGFloat = petalCount <= 4 ? 34 : (petalCount <= 6 ? 28 : 22)
-        let fraction: CGFloat = petalCount <= 4 ? 0.64 : (petalCount <= 6 ? 0.70 : 0.76)
-        return PetalLabelStyle(size: size * diameter / FlowerMetrics.maxDiameter, radiusFraction: fraction)
-    }
 
     // An account's number, one digit or two.
     static func number(petalCount: Int) -> PetalLabelStyle {
-        PetalLabelStyle(size: petalCount <= 5 ? 26 : 21, radiusFraction: petalCount <= 4 ? 0.58 : 0.64)
+        PetalLabelStyle(size: petalCount <= 5 ? 24 : 19, radiusFraction: 0.68)
     }
 }
 
@@ -393,7 +370,6 @@ struct StatusBadge: View {
     let showsCount: Bool
 
     var body: some View {
-        let isExhausted = badge.urgency == .exhausted
         HStack(spacing: 3) {
             Image(systemName: badge.urgency.symbol)
                 .font(.system(size: 10, weight: .bold))
@@ -403,10 +379,10 @@ struct StatusBadge: View {
                     .monospacedDigit()
             }
         }
-        .foregroundStyle(isExhausted ? Color.white : PetalLook.inkOnColor)
+        .foregroundStyle(badge.urgency.badgeInk)
         .padding(.horizontal, showsCount ? 7 : 0)
         .frame(minWidth: 20, minHeight: 20)
-        .background(Capsule().fill(isExhausted ? Color(red: 0.80, green: 0.13, blue: 0.12) : Color(nsColor: .systemOrange)))
+        .background(Capsule().fill(badge.urgency.badgeFill))
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.9), lineWidth: 1.25))
         .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
     }
@@ -435,34 +411,45 @@ struct SignInBadge: View {
     }
 }
 
-// One petal: a pale track, the area-correct fill, stale stripes, and its text. The text turns dark exactly at the fill's edge,
-// so a figure the edge cuts through stays legible on both sides.
+// Marks the tip of a petal whose account needs attention: a small disc in the status color with its own glyph, so it never rests on color alone.
+struct TipBadge: View {
+    let urgency: QuotaUrgency
+
+    var body: some View {
+        Image(systemName: urgency.tipSymbol)
+            .font(.system(size: 8, weight: .black))
+            .foregroundStyle(urgency.badgeInk)
+            .frame(width: 16, height: 16)
+            .background(Circle().fill(urgency.badgeFill))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.9), lineWidth: 1.25))
+            .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+            .accessibilityHidden(true)
+    }
+}
+
+// One petal: a pale track with a fine outline, the area-correct fill shading outward from the center, stale stripes, and a tip badge when
+// its account needs attention. With a label, the account's number turns dark exactly at the fill's edge, so a number the edge cuts through
+// stays legible on both sides.
 struct PetalView: View {
     let geometry: PetalGeometry
     let petal: Petal
     let color: Color
-    let label: PetalLabelStyle
-    let badgeShowsCount: Bool
-    var isLifted = false
+    // Nil on the front page, where the petals are too small for digits.
+    var label: PetalLabelStyle?
 
     var body: some View {
         let middle = CGPoint(x: geometry.outerRadius, y: geometry.outerRadius)
         let reach = fillReach
         ZStack {
             marks(reach: reach)
-                .brightness(isLifted ? PetalLook.liftBrightness : 0)
-            text(reach: reach, middle: middle)
-            if let badge = petal.badge {
-                StatusBadge(badge: badge, showsCount: badgeShowsCount)
-                    .position(geometry.badgeCenter(in: middle))
+            if let label {
+                text(label, reach: reach, middle: middle)
             }
-            if petal.signInCount > 0 {
-                SignInBadge(count: petal.signInCount)
-                    .position(geometry.signInBadgeCenter(in: middle))
+            if let urgency = petal.urgency {
+                TipBadge(urgency: urgency)
+                    .position(geometry.tipCenter(in: middle))
             }
         }
-        .scaleEffect(isLifted ? PetalLook.liftScale : 1)
-        .animation(.easeOut(duration: 0.12), value: isLifted)
         .animation(.easeOut(duration: 0.35), value: petal.usedFraction)
     }
 
@@ -478,13 +465,24 @@ struct PetalView: View {
         return fraction >= 1 ? geometry.outerRadius + PetalLook.fullFillOverhang : geometry.fillRadius(forUsedFraction: fraction)
     }
 
+    // Full color at the base, fading toward the tip. The shape fills the whole flower's frame, so the gradient centers on the flower.
+    private var shading: RadialGradient {
+        RadialGradient(
+            colors: [color, color.opacity(PetalLook.tipOpacity)],
+            center: .center,
+            startRadius: geometry.innerRadius,
+            endRadius: geometry.outerRadius
+        )
+    }
+
     @ViewBuilder
     private func marks(reach: CGFloat?) -> some View {
         let shape = PetalShape(geometry: geometry)
         if petal.usedFraction == nil {
-            shape.stroke(color, lineWidth: PetalLook.outlineWidth).opacity(dim)
+            shape.stroke(color, style: StrokeStyle(lineWidth: PetalLook.outlineWidth, dash: [3, 3])).opacity(dim)
         } else {
             shape.fill(color.opacity(PetalLook.trackOpacity))
+            shape.stroke(color.opacity(PetalLook.trackStrokeOpacity), lineWidth: 1)
             if let reach {
                 filled(shape, reach: reach)
             }
@@ -500,14 +498,14 @@ struct PetalView: View {
                 .mask { StripeBands() }
                 .clipShape(FillDisk(radius: reach))
         } else {
-            shape.fill(color)
+            shape.fill(shading)
                 .clipShape(FillDisk(radius: reach))
         }
     }
 
     // Over the fill the text is dark, and over the empty track it is the primary color. A stale fill is dim and striped,
     // so its figure keeps the primary color throughout. An outline leaves the text on the panel, so it takes the outline's color.
-    private func text(reach: CGFloat?, middle: CGPoint) -> some View {
+    private func text(_ label: PetalLabelStyle, reach: CGFloat?, middle: CGPoint) -> some View {
         let point = geometry.axisPoint(atRadius: geometry.outerRadius * label.radiusFraction, in: middle)
         let digits = Text(petal.text)
             .font(.system(size: label.size, weight: .heavy, design: .rounded))
@@ -604,148 +602,185 @@ struct ThinBar: View {
     }
 }
 
-struct ProviderFlower: View {
-    let providers: [ProviderUsage]
+// The front page: one emblem for each provider, in rows of `columns` with the last row centered. Click an emblem to open its provider's page.
+struct ProviderEmblems: View {
+    let details: [ProviderDetail]
+    let columns: Int
     let logos: ProviderLogoCatalog
     let route: PanelRoute
     // Pairs the logos and the tint with the provider page's. Nil under Reduce Motion, which cross-fades instead.
     let namespace: Namespace.ID?
     let open: (String) -> Void
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovered: Int?
+    @State private var hovered: String?
+    // False while the panel is closed, so the petals unfold each time it opens.
+    @State private var hasBloomed = false
 
     private var openProvider: String? {
         if case .provider(let id) = route { id } else { nil }
     }
 
+    private var rows: [Range<Int>] {
+        stride(from: 0, to: details.count, by: columns).map { $0..<min($0 + columns, details.count) }
+    }
+
     var body: some View {
         GeometryReader { proxy in
-            let flower = FlowerGeometry(petalCount: providers.count, diameter: Self.diameter(in: proxy.size))
-            ZStack {
-                ZStack {
-                    petals(in: flower)
-                    tips(in: flower)
-                    tints(in: flower)
+            let diameter = Self.diameter(in: proxy.size, columns: columns, rows: rows.count)
+            VStack(spacing: EmblemMetrics.spacing) {
+                ForEach(rows, id: \.lowerBound) { row in
+                    HStack(spacing: EmblemMetrics.spacing) {
+                        ForEach(row, id: \.self) { index in
+                            cell(at: index, diameter: diameter)
+                        }
+                    }
                 }
-                .accessibilityHidden(true)
-                touch(in: flower)
-                accessibility(in: flower)
             }
-            .frame(width: flower.diameter, height: flower.diameter)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("quotablet.provider-flower")
+        .accessibilityIdentifier("quotablet.provider-emblems")
         .accessibilityHidden(openProvider != nil)
+        .onAppear { hasBloomed = true }
+        .onDisappear {
+            hasBloomed = false
+            setHovered(nil)
+        }
         .onChange(of: openProvider) { _, _ in setHovered(nil) }
-        .onDisappear { setHovered(nil) }
+    }
+
+    // As large as a cell allows, up to `maxDiameter`. A cell also holds the tip badges' overhang and the caption.
+    private static func diameter(in size: CGSize, columns: Int, rows: Int) -> CGFloat {
+        let across = (size.width - 2 * EmblemMetrics.inset - CGFloat(columns - 1) * EmblemMetrics.spacing) / CGFloat(columns)
+        let down = (size.height - 2 * EmblemMetrics.inset - CGFloat(rows - 1) * EmblemMetrics.spacing) / CGFloat(rows)
+            - EmblemMetrics.captionGap - EmblemMetrics.captionHeight
+        return max(0, min(EmblemMetrics.maxDiameter, across - 2 * EmblemMetrics.tipRoom, down - 2 * EmblemMetrics.tipRoom))
     }
 
     // The only place `hovered` changes, so every push of the pointing hand has its pop.
-    private func setHovered(_ index: Int?) {
-        guard index != hovered else { return }
+    private func setHovered(_ provider: String?) {
+        guard provider != hovered else { return }
         if hovered == nil {
             NSCursor.pointingHand.push()
-        } else if index == nil {
+        } else if provider == nil {
             NSCursor.pop()
         }
-        hovered = index
-    }
-
-    // The flower is 300 pt across, or smaller when notices leave less room. The logos sit beyond its tips, so they count against the room.
-    private static func diameter(in size: CGSize) -> CGFloat {
-        let reach = FlowerMetrics.logoGap + FlowerMetrics.logoMaxWidth
-        return max(0, min(FlowerMetrics.maxDiameter, size.width - 2 * reach, size.height - 2 * reach))
-    }
-
-    private func petals(in flower: FlowerGeometry) -> some View {
-        ForEach(providers.indices, id: \.self) { index in
-            PetalView(
-                geometry: flower.petals[index],
-                petal: Petal(providers[index]),
-                color: QuotaPalette.color(at: index),
-                label: .percent(petalCount: providers.count, diameter: flower.diameter),
-                badgeShowsCount: true,
-                isLifted: hovered == index && openProvider == nil
-            )
-            .scaleEffect(scale(of: providers[index].provider), anchor: .center)
-            .opacity(openProvider == nil ? 1 : 0)
-        }
+        hovered = provider
     }
 
     private func scale(of provider: String) -> CGFloat {
         guard let openProvider, !reduceMotion else { return 1 }
-        return provider == openProvider ? FlowerMetrics.openedScale : FlowerMetrics.othersScale
+        return provider == openProvider ? EmblemMetrics.openedScale : EmblemMetrics.othersScale
     }
 
-    // Each logo sits beyond its petal's tip. It fades with the flower, and a stand-in at the same place pairs with the page's logo.
-    private func tips(in flower: FlowerGeometry) -> some View {
-        ForEach(providers.indices, id: \.self) { index in
-            let provider = providers[index].provider
-            let size = ProviderMark.size(
-                provider: provider, logos: logos, appearance: LogoAppearance(colorScheme),
-                height: FlowerMetrics.logoHeight, maxWidth: FlowerMetrics.logoMaxWidth
-            )
-            ProviderMark(provider: provider, logos: logos, height: FlowerMetrics.logoHeight, maxWidth: FlowerMetrics.logoMaxWidth)
+    private func cell(at index: Int, diameter: CGFloat) -> some View {
+        let detail = details[index]
+        let provider = detail.usage.provider
+        let isLifted = hovered == provider && openProvider == nil
+        return Button {
+            open(provider)
+        } label: {
+            VStack(spacing: EmblemMetrics.captionGap) {
+                ProviderEmblem(
+                    provider: provider,
+                    petals: Petal.emblem(of: detail),
+                    color: QuotaPalette.color(at: index),
+                    logos: logos,
+                    diameter: diameter,
+                    hasBloomed: hasBloomed || reduceMotion,
+                    pairsWithPage: openProvider == nil,
+                    namespace: namespace
+                )
+                .brightness(isLifted ? PetalLook.liftBrightness : 0)
+                .padding(EmblemMetrics.tipRoom)
+                EmblemCaption(detail: detail)
+                    .frame(height: EmblemMetrics.captionHeight)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(scale(of: provider) * (isLifted ? PetalLook.liftScale : 1))
+        .animation(.easeOut(duration: 0.12), value: isLifted)
+        .opacity(openProvider == nil ? 1 : 0)
+        .allowsHitTesting(openProvider == nil)
+        .onHover { inside in
+            if inside {
+                setHovered(provider)
+            } else if hovered == provider {
+                setHovered(nil)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(detail.emblemAccessibilityLabel)
+        .accessibilityHint("Shows accounts")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("quotablet.emblem.\(provider)")
+    }
+}
+
+// One provider: a petal for each account around the provider's logo, over a soft glow of the provider's color.
+private struct ProviderEmblem: View {
+    let provider: String
+    let petals: [Petal]
+    let color: Color
+    let logos: ProviderLogoCatalog
+    let diameter: CGFloat
+    let hasBloomed: Bool
+    // While the front page shows, stand-ins here pair with the page's logo and tint, so the page grows out of this emblem and shrinks back into it.
+    let pairsWithPage: Bool
+    let namespace: Namespace.ID?
+
+    var body: some View {
+        let flower = FlowerGeometry(petalCount: petals.count, diameter: diameter)
+        let hole = PetalGeometry.holeRadius(outerRadius: diameter / 2)
+        let glow = hole * EmblemMetrics.haloReach
+        ZStack {
+            Circle()
+                .fill(RadialGradient(colors: [color.opacity(0.32), color.opacity(0)], center: .center, startRadius: 0, endRadius: glow))
+                .frame(width: 2 * glow, height: 2 * glow)
+            ForEach(petals.indices, id: \.self) { index in
+                PetalView(geometry: flower.petals[index], petal: petals[index], color: color)
+                    .scaleEffect(hasBloomed ? 1 : EmblemMetrics.bloomStart)
+                    .opacity(hasBloomed ? 1 : 0)
+                    .animation(.spring(duration: 0.55, bounce: 0.3).delay(Double(index) * EmblemMetrics.bloomStagger), value: hasBloomed)
+            }
+            Circle()
+                .fill(.background)
+                .overlay(Circle().strokeBorder(color.opacity(0.6), lineWidth: 1.25))
+                .frame(width: 2 * hole - 4, height: 2 * hole - 4)
+            ProviderMark(provider: provider, logos: logos, height: hole * 0.9, maxWidth: hole * 1.4)
                 .overlay {
-                    if openProvider == nil {
+                    if pairsWithPage {
                         Color.clear.paired(PanelHero.logo(provider), in: namespace)
                     }
                 }
-                .position(flower.petals[index].boxCenter(size: size, beyondTipBy: FlowerMetrics.logoGap, in: flower.center))
-                .opacity(openProvider == nil ? 1 : 0)
         }
-    }
-
-    // The page's tint grows out of the petal that opens. Its stand-in is the petal's bounding box and exists only while the flower shows.
-    @ViewBuilder
-    private func tints(in flower: FlowerGeometry) -> some View {
-        if openProvider == nil {
-            ForEach(providers.indices, id: \.self) { index in
-                let box = flower.petals[index].path(in: flower.center).boundingBoxOfPath
-                Color.clear
-                    .frame(width: box.width, height: box.height)
-                    .paired(PanelHero.tint(providers[index].provider), in: namespace)
-                    .position(x: box.midX, y: box.midY)
+        .frame(width: diameter, height: diameter)
+        .overlay {
+            if pairsWithPage {
+                Color.clear.paired(PanelHero.tint(provider), in: namespace)
             }
         }
     }
+}
 
-    // One hover and one click for the whole flower, both resolved against the petals' outlines.
-    private func touch(in flower: FlowerGeometry) -> some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let point): setHovered(flower.index(containing: point))
-                case .ended: setHovered(nil)
-                }
+// The provider's name and its busiest account's used share, with a count of the accounts that need sign-in.
+private struct EmblemCaption: View {
+    let detail: ProviderDetail
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(ProviderRegistry.displayName(for: detail.usage.provider))
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+            Text(UsageFormatting.usedPercent(detail.peakFraction))
+                .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            if detail.usage.problemCount > 0 {
+                SignInBadge(count: detail.usage.problemCount)
             }
-            .gesture(
-                SpatialTapGesture().onEnded { tap in
-                    if let index = flower.index(containing: tap.location) { open(providers[index].provider) }
-                }
-            )
-            .allowsHitTesting(openProvider == nil)
-    }
-
-    // Each petal is a button of its own, sized to the petal and not to the flower, so a screen reader outlines the right shape.
-    private func accessibility(in flower: FlowerGeometry) -> some View {
-        ForEach(providers.indices, id: \.self) { index in
-            let usage = providers[index]
-            let box = flower.petals[index].path(in: flower.center).boundingBoxOfPath
-            Color.clear
-                .frame(width: box.width, height: box.height)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(usage.petalAccessibilityLabel)
-                .accessibilityHint("Shows accounts")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { open(usage.provider) }
-                .accessibilityIdentifier("quotablet.petal.\(usage.provider)")
-                .position(x: box.midX, y: box.midY)
-                .allowsHitTesting(false)
         }
     }
 }

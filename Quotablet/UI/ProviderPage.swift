@@ -84,7 +84,7 @@ private extension View {
 
 struct ProviderPage: View {
     let detail: ProviderDetail
-    // The color of the provider's petal on the front page, which tints this page.
+    // The color of the provider's emblem on the front page, which tints this page and every one of its petals and account chips.
     let color: Color
     let logos: ProviderLogoCatalog
     let now: Date
@@ -152,7 +152,7 @@ struct ProviderPage: View {
         case .flower:
             VStack(spacing: 6) {
                 let diameter = PageMetrics.flowerDiameter(accountCount: detail.accounts.count)
-                AccountFlower(accounts: detail.accounts, diameter: diameter)
+                AccountFlower(accounts: detail.accounts, color: color, diameter: diameter)
                     .frame(maxWidth: .infinity)
                     .frame(height: diameter)
                     .overlay(alignment: .bottomLeading) {
@@ -171,11 +171,6 @@ struct ProviderPage: View {
                     .padding(.bottom, 8)
             }
         }
-    }
-
-    // The account's petal color. Accounts without a flower take the provider's own.
-    private func chipColor(for account: AccountDetail) -> Color {
-        layout == .flower ? QuotaPalette.color(at: account.number - 1) : color
     }
 
     // The company whose logo the account's badge wears. Nil while identifiers are hidden, and nil when the app has no logo file for the company,
@@ -208,7 +203,7 @@ struct ProviderPage: View {
                     ForEach(detail.accountsByUrgency, id: \.number) { account in
                         AccountRow(
                             account: account,
-                            color: chipColor(for: account),
+                            color: color,
                             columns: detail.windowColumns,
                             label: accountLabel(account),
                             showsLabel: showsAccountLabels,
@@ -229,7 +224,7 @@ struct ProviderPage: View {
                 ForEach(detail.accountsByUrgency, id: \.number) { account in
                     AccountCard(
                         account: account,
-                        color: chipColor(for: account),
+                        color: color,
                         label: accountLabel(account),
                         company: badgeCompany(of: account),
                         now: now
@@ -250,8 +245,10 @@ struct ProviderPage: View {
     }
 }
 
+// Every petal takes the provider's color, so the petals stand apart by their numbers and the rows find them by number.
 private struct AccountFlower: View {
     let accounts: [AccountDetail]
+    let color: Color
     let diameter: CGFloat
 
     var body: some View {
@@ -261,9 +258,8 @@ private struct AccountFlower: View {
                 PetalView(
                     geometry: flower.petals[index],
                     petal: Petal(accounts[index]),
-                    color: QuotaPalette.color(at: index),
-                    label: .number(petalCount: accounts.count),
-                    badgeShowsCount: false
+                    color: color,
+                    label: .number(petalCount: accounts.count)
                 )
             }
         }
@@ -288,7 +284,7 @@ private struct StaleKey: View {
     }
 }
 
-// The account's number in its petal's color, so a row finds its petal by color and number. An account whose email domain has a logo wears the
+// The account's number in the provider's color, so a row finds its petal by number. An account whose email domain has a logo wears the
 // logo instead: the mark on a white plate ringed in the petal's color, and the number in a small disc of that color on the plate's corner.
 // The badge keeps the footprint of the plain one. The mark is drawn as its file provides it, so the petal's color and staleness touch only
 // the ring and the disc.

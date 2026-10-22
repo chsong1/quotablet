@@ -507,7 +507,7 @@ struct ProviderUsage: Equatable, Sendable {
         return ([accounts] + problemPhrases).joined(separator: ", ")
     }
 
-    // What a petal and a list row speak, such as "Claude 79% used across 5 accounts, 1 exhausted, 2 near limit, stale".
+    // What a list row speaks, and what an emblem's speech starts with, such as "Claude 79% used across 5 accounts, 1 exhausted, 2 near limit, stale".
     var petalAccessibilityLabel: String {
         ([spokenSummary] + attention.spokenParts + (isStale ? ["stale"] : [])).joined(separator: ", ")
     }
@@ -905,7 +905,7 @@ struct ProblemDetail: Equatable, Sendable {
     }
 }
 
-// One provider's page: the provider's figures, each of its accounts, and each account that has a problem.
+// One provider's emblem and page: the provider's figures, each of its accounts, and each account that has a problem.
 struct ProviderDetail: Equatable, Sendable {
     let usage: ProviderUsage
     // In account-number order, so an account's petal keeps its place from one refresh to the next.
@@ -926,15 +926,32 @@ struct ProviderDetail: Equatable, Sendable {
     }
 
     var hasStaleAccount: Bool { accounts.contains(where: \.isStale) }
+
+    // The used share of the account closest to its limit, which the emblem shows under the provider's name. Nil when no account is measured.
+    var peakFraction: Double? { accounts.compactMap(\.capacityFraction).max() }
+
+    // The provider's summary, then the busiest account's share when several accounts stand behind the figure, so the emblem says what it shows.
+    var emblemAccessibilityLabel: String {
+        guard accounts.count > 1, let peakFraction else { return usage.petalAccessibilityLabel }
+        return "\(usage.petalAccessibilityLabel), busiest account \(UsageFormatting.usedPercent(peakFraction)) used"
+    }
 }
 
 extension UsageSnapshot {
+    // Every provider's accounts, in the registry's order: what the front page's emblems draw.
+    func providerDetails(now: Date) -> [ProviderDetail] {
+        providerUsage(now: now).map { detail(of: $0, now: now) }
+    }
+
     // One provider's accounts as its page shows them. Nil when no report and no problem account names the provider.
     func providerDetail(of provider: String, now: Date) -> ProviderDetail? {
-        guard let usage = providerUsage(now: now).first(where: { $0.provider == provider }) else { return nil }
+        providerUsage(now: now).first { $0.provider == provider }.map { detail(of: $0, now: now) }
+    }
+
+    private func detail(of usage: ProviderUsage, now: Date) -> ProviderDetail {
         let capacity = Dictionary(uniqueKeysWithValues: usage.measured.map { ($0.report.id, $0.quota) })
         let accounts = reports
-            .filter { $0.provider == provider }
+            .filter { $0.provider == usage.provider }
             .enumerated()
             .map { offset, report in
                 AccountDetail(
@@ -946,7 +963,7 @@ extension UsageSnapshot {
                     productUsage: report.productUsage.map { ProductUsageEntry(name: $0.productName, usedFraction: $0.amount?.progress) }
                 )
             }
-        return ProviderDetail(usage: usage, accounts: accounts, problems: problemDetails(of: provider))
+        return ProviderDetail(usage: usage, accounts: accounts, problems: problemDetails(of: usage.provider))
     }
 
     private static func windowEntries(of report: UsageReport) -> [WindowEntry] {
