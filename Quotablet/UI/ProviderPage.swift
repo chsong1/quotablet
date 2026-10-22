@@ -91,6 +91,8 @@ struct ProviderPage: View {
     // The name of an account, which the identifier toggle turns from "Account 2" into the account's own.
     let accountLabel: (AccountDetail) -> String
     let showsAccountLabels: Bool
+    // The page is the only place account labels show, so it carries the toggle that reveals or hides them for the session.
+    let toggleAccountLabels: () -> Void
     // Pairs the logo and the tint with the front page's. Nil under Reduce Motion, which cross-fades instead.
     let namespace: Namespace.ID?
     let back: () -> Void
@@ -133,6 +135,16 @@ struct ProviderPage: View {
                 .lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
+            Button(action: toggleAccountLabels) {
+                Image(systemName: showsAccountLabels ? "eye.slash" : "eye")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .accessibilityLabel(showsAccountLabels ? "Hide account identifiers" : "Show account identifiers")
+            .help(showsAccountLabels ? "Hide account names and identifiers for this session." : "Reveal account names and identifiers for this session.")
             Text(detail.usage.usedText)
                 .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(PetalLook.inkOnColor)

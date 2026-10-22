@@ -40,6 +40,7 @@ struct UsagePanel: View {
         panel(now: store.presentationDate)
         .frame(width: 420, height: 600)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background { quitShortcut }
         .onChange(of: store.snapshot?.revision) { _, _ in
             route = route.resolved(in: store.snapshot)
         }
@@ -72,8 +73,6 @@ struct UsagePanel: View {
                 NoticeRow(text: selectionError, symbol: "info.circle", color: .secondary)
             }
             content(now: now)
-            Divider().opacity(0.65)
-            footer
         }
         .background(.regularMaterial)
         .accessibilityIdentifier("quotablet.usage-panel")
@@ -104,6 +103,7 @@ struct UsagePanel: View {
             .accessibilityLabel("Refresh usage now")
             .help("Fetch the latest usage reports from OMP.")
             .keyboardShortcut("r", modifiers: .command)
+            moreMenu
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -133,7 +133,8 @@ struct UsagePanel: View {
             EmptyState(
                 symbol: "terminal",
                 title: "Usage is unavailable",
-                detail: "Choose the OMP executable or retry after it is available."
+                detail: "Choose the OMP executable or retry after it is available.",
+                action: (label: "Choose OMP…", perform: chooseCLI)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -166,6 +167,7 @@ struct UsagePanel: View {
                     now: now,
                     accountLabel: { accountLabel(for: $0.report, number: $0.number) },
                     showsAccountLabels: store.revealsIdentifiers,
+                    toggleAccountLabels: { store.setRevealsIdentifiers(!store.revealsIdentifiers) },
                     namespace: namespace,
                     back: close
                 )
@@ -190,60 +192,49 @@ struct UsagePanel: View {
         withAnimation(routeAnimation) { route = .flower }
     }
 
-    private var footer: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 14) {
-                Button {
-                    store.setRevealsIdentifiers(!store.revealsIdentifiers)
-                } label: {
-                    Image(systemName: store.revealsIdentifiers ? "eye.slash" : "eye")
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(store.revealsIdentifiers ? "Hide account identifiers" : "Show account identifiers")
-                .help(store.revealsIdentifiers ? "Hide account names and identifiers for this session." : "Reveal account names and identifiers for this session.")
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-
-                Button {
-                    isChoosingCLI = true
-                    selectionError = nil
-                } label: {
-                    Label("Choose OMP…", systemImage: "gearshape")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Choose OMP executable")
+    // What the panel does besides showing usage: where OMP comes from, and quitting. A menu bar app has no Dock icon and no app menu,
+    // so this menu is the one place to quit with the pointer.
+    private var moreMenu: some View {
+        Menu {
+            Text(store.executablePath == nil ? "OMP: automatic discovery" : "OMP: custom path")
+            Button("Choose OMP…", action: chooseCLI)
                 .help("Select the executable used for omp usage --json.")
-
-                if store.executablePath != nil {
-                    Button("Automatic") {
-                        Task { await store.setCLIPath(nil) }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Use automatic OMP discovery")
+            if store.executablePath != nil {
+                Button("Use Automatic Discovery") {
+                    Task { await store.setCLIPath(nil) }
                 }
-
-                Spacer(minLength: 0)
-                Button {
-                    NSApplication.shared.terminate(nil)
-                } label: {
-                    Label("Quit", systemImage: "power")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Quit Quotablet")
+            }
+            Divider()
+            Button("Quit Quotablet", action: quit)
                 .keyboardShortcut("q", modifiers: .command)
-            }
-            HStack {
-                Text(store.executablePath == nil ? "Automatic CLI discovery" : "Custom CLI path")
-                Spacer()
-                Text("Refreshes every \(UsagePolicy.refreshIntervalSeconds / 60) minutes")
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.tertiary)
-            .accessibilityElement(children: .combine)
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 14, weight: .semibold))
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 30, height: 30)
+        .accessibilityLabel("More")
+        .help("Choose OMP or quit Quotablet.")
+    }
+
+    // A popup menu answers its key equivalents only while it is open, so Command-Q also lives on a button that takes no room and no focus.
+    private var quitShortcut: some View {
+        Button("Quit Quotablet", action: quit)
+            .keyboardShortcut("q", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+    }
+
+    private func chooseCLI() {
+        isChoosingCLI = true
+        selectionError = nil
+    }
+
+    private func quit() {
+        NSApplication.shared.terminate(nil)
     }
 
     private func accountLabel(for report: UsageReport, number: Int) -> String {
@@ -279,22 +270,30 @@ private struct EmptyState: View {
     let symbol: String
     let title: String
     let detail: String
+    var action: (label: String, perform: () -> Void)?
 
     var body: some View {
         VStack(spacing: 9) {
-            Image(systemName: symbol)
-                .font(.system(size: 20, weight: .regular))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text(title)
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-            Text(detail)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 270)
+            VStack(spacing: 9) {
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 270)
+            }
+            .accessibilityElement(children: .combine)
+            if let action {
+                Button(action.label, action: action.perform)
+                    .controlSize(.small)
+                    .padding(.top, 4)
+            }
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
