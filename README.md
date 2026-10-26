@@ -179,6 +179,8 @@ The domain of an account's email is part of who it is, so a logo shows only whil
 
 **Apple (`company-apple.png`).** The file is the Apple mark that `https://www.apple.com/` publishes as its Organization JSON-LD `logo`, byte for byte from `https://www.apple.com/ac/structured-data/images/knowledge_graph_logo.png?202610011401`, retrieved on 2026-10-20 (`Last-Modified: Tue, 10 May 2016 22:25:17 GMT`, 302 × 302, 10,070 bytes, SHA-256 `4ea439d373443bf940df4c21ddfbd479fcaf3ecbe61928fa16004c67c28834cd`). The Sign in with Apple logo package is not used; the badge uses this public site logo instead. No conversion: the bundled PNG is the response body as served.
 
+**App icon.** The app icon is Quotablet's own emblem: six cyan petals around a dark disc that holds the letter `Q`, over a soft cyan glow on a navy rounded square. The petals take the panel's petal outline and fill to uneven shares, as accounts do, and the `Q` is set in the rounded heavy system font of the letter badges. The artwork is original to this repository and holds no third-party mark. `Tools/RenderAppIcon.swift` draws it and writes the ten images of a macOS icon set into `Quotablet/Resources/Assets.xcassets`, so change the script and run `swift Tools/RenderAppIcon.swift` from the repository root rather than editing the PNGs. The icon fills Apple's macOS icon grid, an 824 × 824 continuous rounded square centered in a 1024 × 1024 canvas, so macOS 26 shows it as it is and does not box it in a gray squircle. It is a plain asset catalog rather than an Icon Composer file, which would need Xcode 26 or later.
+
 **OMP executable.** Automatic discovery checks, in order:
 
 1. `~/.local/bin/omp`
