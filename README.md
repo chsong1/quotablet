@@ -41,7 +41,7 @@ Set `DEVELOPER_DIR` on each command. Keep DerivedData under the ignored `.local/
 
 ## What it does
 
-Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one item for each provider that OMP reports on, and for each provider whose accounts OMP lists without a report. An item is the provider's logo and the share of that provider's combined limit that is used. The panel opens on one emblem for each provider and nothing else: the provider's logo with a petal for each of its accounts around it. Click an emblem to see that provider's accounts.
+Quotablet lives in the menu bar as a window-style `MenuBarExtra`. The label shows one item for each provider that OMP reports on, and for each provider whose accounts OMP lists without a report, unless you hide that provider from the menu bar. An item is the provider's logo and the share of that provider's combined limit that is used. The panel opens on one emblem for each provider and nothing else: the provider's logo with a petal for each of its accounts around it. Click an emblem to see that provider's accounts.
 
 **Collection cadence.** On launch the app loads any saved snapshot, then refreshes immediately. It refreshes again every 5 minutes and whenever you press the panel refresh control. A separate presentation clock ticks every 30 seconds so age and reset countdowns move without another OMP call.
 
@@ -109,7 +109,7 @@ Around the logo, each account has one petal in account-number order. The first p
 
 A petal whose account needs attention carries a small badge on its tip. A red disc with an `xmark` marks an account with an exhausted quota, and an orange disc with an `!` marks one whose most urgent quota is near limit. The two glyphs differ in shape, so a badge never rests on its color alone.
 
-Under each emblem, the provider's name is followed by the used share of its busiest account, such as `Claude 100%`, because the account closest to its limit is the one that runs out first. The share is a dash when no account reports one. The provider's combined figure stays in the menu bar and on the provider's page. When some accounts need to sign in again, a dark capsule with a red `person.crop.circle.badge.exclamationmark` symbol and the count follows the share, so it never reads as a quota status. The count adds the disconnected accounts and the accounts without usage data.
+Under each emblem, the provider's name is followed by the used share of its busiest account, such as `Claude 100%`, because the account closest to its limit is the one that runs out first. The share is a dash when no account reports one. The provider's combined figure stays on the provider's page and, unless the provider is hidden there, in the menu bar. When some accounts need to sign in again, a dark capsule with a red `person.crop.circle.badge.exclamationmark` symbol and the count follows the share, so it never reads as a quota status. The count adds the disconnected accounts and the accounts without usage data.
 
 Each time the panel opens, the petals unfold from the logo one after another. With Reduce Motion on, they appear in place. The emblem under the pointer lifts and brightens, and the pointer becomes a pointing hand. A click anywhere on an emblem or its caption opens that provider's page.
 
