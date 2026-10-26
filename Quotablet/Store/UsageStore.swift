@@ -26,6 +26,7 @@ final class UsageStore {
     private(set) var lastError: OMPClientError?
     private(set) var persistenceWarning = false
     private(set) var executablePath: String?
+    private(set) var hiddenMenuBarProviders: Set<String> = []
     private(set) var logos = ProviderLogoCatalog.empty
     private(set) var revealsIdentifiers = true
     private(set) var presentationDate = Date()
@@ -64,12 +65,25 @@ final class UsageStore {
         }
     }
 
+    // The providers the menu bar shows: those of the snapshot that the user has not hidden, in the registry's order.
+    func menuBarProviders(now: Date) -> [ProviderUsage] {
+        shownInMenuBar(snapshot?.providerUsage(now: now) ?? [])
+    }
+
     func menuBarAccessibilityLabel(now: Date) -> String {
         let age = freshness(fetchedAt: snapshot?.oldestReportFetchedAt).displayLabel(now: now)
-        guard let providers = snapshot?.providerUsage(now: now), !providers.isEmpty else {
-            return "Quotablet. No quota is available for the menu bar. \(age)"
+        let providers = snapshot?.providerUsage(now: now) ?? []
+        let shown = shownInMenuBar(providers)
+        guard !shown.isEmpty else {
+            // Every provider hidden leaves the plain symbol, the same as no provider, so the speech tells the two apart.
+            let reason = providers.isEmpty ? "No quota is available for the menu bar." : "Every provider is hidden from the menu bar."
+            return "Quotablet. \(reason) \(age)"
         }
-        return "\(providers.spokenSummary). \(age)"
+        return "\(shown.spokenSummary). \(age)"
+    }
+
+    private func shownInMenuBar(_ providers: [ProviderUsage]) -> [ProviderUsage] {
+        providers.filter { !hiddenMenuBarProviders.contains($0.provider) }
     }
 
     // The header names the age of the oldest report, or of the snapshot itself when it holds no report.
@@ -94,6 +108,7 @@ final class UsageStore {
         guard !isShuttingDown else { return }
 
         executablePath = Self.normalizedPath(stored.settings.executablePath)
+        hiddenMenuBarProviders = stored.settings.hiddenMenuBarProviders
         reloadLogosIfChanged()
         snapshot = stored.snapshot
         snapshotOrigin = stored.snapshot == nil ? nil : .cached
@@ -154,6 +169,15 @@ final class UsageStore {
 
     func setRevealsIdentifiers(_ reveals: Bool) {
         revealsIdentifiers = reveals
+    }
+
+    // Takes a provider out of the menu bar or puts it back. Only the menu bar changes: the panel keeps the provider, and OMP's accounts stay as they are.
+    func setShowsInMenuBar(_ shows: Bool, provider: String) async {
+        guard !isShuttingDown else { return }
+        let hidden = shows ? hiddenMenuBarProviders.subtracting([provider]) : hiddenMenuBarProviders.union([provider])
+        guard hidden != hiddenMenuBarProviders else { return }
+        hiddenMenuBarProviders = hidden
+        await persistSettings()
     }
 
     func setCLIPath(_ path: String?) async {
@@ -253,7 +277,7 @@ final class UsageStore {
     }
 
     private func persistSettings() async {
-        let settings = PersistedSettings(executablePath: executablePath)
+        let settings = PersistedSettings(executablePath: executablePath, hiddenMenuBarProviders: hiddenMenuBarProviders)
         if !(await persistence.save(settings: settings)) {
             persistenceWarning = true
         }
