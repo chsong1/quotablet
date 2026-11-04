@@ -168,6 +168,26 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertNil(empty.settings.executablePath)
     }
 
+    func testHiddenMenuBarProvidersSurviveASaveAndALoadAndAnUnreadableListCostsNothingElse() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = AppPersistence(directoryURL: directory)
+        let settingsURL = directory.appendingPathComponent("settings.json")
+        let settings = PersistedSettings(executablePath: "/custom/omp", hiddenMenuBarProviders: ["cursor", "anthropic"])
+
+        let saved = await persistence.save(settings: settings)
+        let written = try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as? [String: Any]
+        let loaded = await persistence.load()
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(written?["hiddenMenuBarProviders"] as? [String], ["anthropic", "cursor"])
+        XCTAssertEqual(loaded.settings, settings)
+
+        try Data(#"{"executablePath":"/custom/omp","hiddenMenuBarProviders":"cursor"}"#.utf8).write(to: settingsURL)
+        let unreadable = await persistence.load()
+        XCTAssertEqual(unreadable.settings, PersistedSettings(executablePath: "/custom/omp"))
+    }
+
     func testASavedSnapshotThatStillCarriesPinKeysStillLoads() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -321,6 +341,55 @@ final class UsageStoreTests: XCTestCase {
 
         await mixed.shutdown()
         await onlyProblems.shutdown()
+    }
+
+    func testAHiddenProviderLeavesTheMenuBarStaysInThePanelAndStaysHiddenAfterARestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = await refreshedStore(RealisticFixture.snapshot(), directory: directory)
+
+        await store.setShowsInMenuBar(false, provider: "cursor")
+
+        XCTAssertEqual(store.menuBarProviders(now: fetchedAt).map(\.provider), ["anthropic", "openai-codex", "xai-oauth"])
+        XCTAssertEqual(store.snapshot?.providerUsage(now: fetchedAt).map(\.provider), ["anthropic", "openai-codex", "xai-oauth", "cursor"])
+        XCTAssertEqual(
+            store.menuBarAccessibilityLabel(now: fetchedAt),
+            "Claude 79% used across 5 accounts; Codex 94% used across 3 accounts; Grok 1% used, 1 account. Provider data under 1m old"
+        )
+        await store.shutdown()
+
+        let fetcher = SequencedFetcher([.success(RealisticFixture.snapshot())])
+        let restarted = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+        await restarted.start()
+        XCTAssertEqual(restarted.hiddenMenuBarProviders, ["cursor"])
+        XCTAssertEqual(restarted.menuBarProviders(now: fetchedAt).map(\.provider), ["anthropic", "openai-codex", "xai-oauth"])
+
+        await restarted.setShowsInMenuBar(true, provider: "cursor")
+        let stored = await AppPersistence(directoryURL: directory).load()
+        XCTAssertEqual(restarted.menuBarProviders(now: fetchedAt).map(\.provider), ["anthropic", "openai-codex", "xai-oauth", "cursor"])
+        XCTAssertEqual(stored.settings, PersistedSettings(executablePath: nil))
+
+        await restarted.shutdown()
+    }
+
+    func testWithEveryProviderHiddenTheMenuBarHasNoProviderAndSaysWhy() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = await refreshedStore(RealisticFixture.snapshot(), directory: directory)
+
+        for provider in ["anthropic", "openai-codex", "xai-oauth", "cursor"] {
+            await store.setShowsInMenuBar(false, provider: provider)
+        }
+
+        XCTAssertTrue(store.menuBarProviders(now: fetchedAt).isEmpty)
+        XCTAssertEqual(
+            store.menuBarAccessibilityLabel(now: fetchedAt),
+            "Quotablet. Every provider is hidden from the menu bar. Provider data under 1m old"
+        )
+
+        await store.shutdown()
     }
 
     func testTheHeaderStatusNamesTheOldestReportsAgeAndFallsBackToTheSnapshotsOwnWhenItHoldsNoReport() async throws {

@@ -9,7 +9,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         let now = store.presentationDate
-        let providers = store.snapshot?.providerUsage(now: now) ?? []
+        let providers = store.menuBarProviders(now: now)
         let summary = store.menuBarAccessibilityLabel(now: now)
         glyph(for: providers)
             .accessibilityLabel(summary)
@@ -192,8 +192,8 @@ struct UsagePanel: View {
         withAnimation(routeAnimation) { route = .flower }
     }
 
-    // What the panel does besides showing usage: where OMP comes from, and quitting. A menu bar app has no Dock icon and no app menu,
-    // so this menu is the one place to quit with the pointer.
+    // What the panel does besides showing usage: where OMP comes from, which providers the menu bar shows, and quitting. A menu bar app
+    // has no Dock icon and no app menu, so this menu is the one place to quit with the pointer.
     private var moreMenu: some View {
         Menu {
             Text(store.executablePath == nil ? "OMP: automatic discovery" : "OMP: custom path")
@@ -202,6 +202,15 @@ struct UsagePanel: View {
             if store.executablePath != nil {
                 Button("Use Automatic Discovery") {
                     Task { await store.setCLIPath(nil) }
+                }
+            }
+            let providers = store.snapshot?.providerUsage(now: store.presentationDate) ?? []
+            if !providers.isEmpty {
+                Divider()
+                Menu("Show in Menu Bar") {
+                    ForEach(providers, id: \.provider) { usage in
+                        Toggle(ProviderRegistry.displayName(for: usage.provider), isOn: showsInMenuBar(usage.provider))
+                    }
                 }
             }
             Divider()
@@ -216,7 +225,14 @@ struct UsagePanel: View {
         .fixedSize()
         .frame(width: 30, height: 30)
         .accessibilityLabel("More")
-        .help("Choose OMP or quit Quotablet.")
+        .help("Choose OMP, pick the providers in the menu bar, or quit Quotablet.")
+    }
+
+    private func showsInMenuBar(_ provider: String) -> Binding<Bool> {
+        Binding(
+            get: { !store.hiddenMenuBarProviders.contains(provider) },
+            set: { shows in Task { await store.setShowsInMenuBar(shows, provider: provider) } }
+        )
     }
 
     // A popup menu answers its key equivalents only while it is open, so Command-Q also lives on a button that takes no room and no focus.
