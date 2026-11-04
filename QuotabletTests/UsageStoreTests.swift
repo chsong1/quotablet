@@ -230,7 +230,7 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.revision, UUID(uuidString: "5B1C6C1E-3F6A-4E52-9B7E-0A1D2C3B4A59"))
         XCTAssertEqual(snapshot.generatedAt, Date(timeIntervalSince1970: 1_800_000_000))
         XCTAssertEqual(snapshot.reports.map(\.privateDisplayLabel), ["person@example.invalid"])
-        XCTAssertEqual(snapshot.reports.first?.resetCredits, 2)
+        XCTAssertEqual(snapshot.reports.first?.resetCredits, ResetCredits(available: 2))
         XCTAssertEqual(snapshot.reports.first?.quotas.first?.label, "Claude 7 Day")
         XCTAssertEqual(snapshot.accountProblems, [])
     }
@@ -394,10 +394,7 @@ final class UsageStoreTests: XCTestCase {
             accountID: accountID,
             organizationID: nil,
             projectID: nil,
-            modelID: nil,
-            tier: nil,
-            windowID: "5h",
-            shared: false
+            tier: nil
         )
         let quota = UsageQuotaDraft(
             id: "session-limit",
@@ -406,8 +403,7 @@ final class UsageStoreTests: XCTestCase {
             window: QuotaWindow(
                 identity: QuotaWindowIdentity(id: "5h"),
                 label: "5 Hour",
-                durationMilliseconds: 18_000_000,
-                resetLabel: nil
+                durationMilliseconds: 18_000_000
             ),
             amount: amount,
             status: .available,
@@ -418,7 +414,7 @@ final class UsageStoreTests: XCTestCase {
             sourceAccount: SourceAccountIdentity(accountID: accountID, organizationID: nil, projectID: nil),
             privateDisplayLabel: "synthetic@example.invalid",
             fetchedAt: Date(timeIntervalSince1970: 1_800_000_000),
-            resetCredits: 0,
+            resetCredits: ResetCredits(available: 0),
             quotas: [quota]
         )
     }

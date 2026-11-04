@@ -547,7 +547,7 @@ final class ProviderMenuBarRendererTests: XCTestCase {
                             id: "weekly",
                             label: "Weekly",
                             scope: nil,
-                            window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7 Day", durationMilliseconds: 604_800_000, resetLabel: nil),
+                            window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7 Day", durationMilliseconds: 604_800_000),
                             amount: UsageAmount(used: 50, limit: 100, remaining: 50, usedFraction: 0.5, remainingFraction: 0.5, unit: .percent),
                             status: .available,
                             resetsAt: nil

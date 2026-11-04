@@ -104,7 +104,7 @@ final class UsageDomainTests: XCTestCase {
 
     func testAPeriodWordNamesTheLengthOfAWindowThatGivesNoDuration() {
         func length(_ label: String, durationMilliseconds: Double?) -> Double {
-            QuotaWindow(identity: QuotaWindowIdentity(id: "w"), label: label, durationMilliseconds: durationMilliseconds, resetLabel: nil)
+            QuotaWindow(identity: QuotaWindowIdentity(id: "w"), label: label, durationMilliseconds: durationMilliseconds)
                 .effectiveLengthMilliseconds
         }
 
@@ -824,14 +824,14 @@ final class UsageDomainTests: XCTestCase {
         let session = quota(id: "session", remainingPercent: 70)
         let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
             report(accountID: "claude-a", quotas: [session]),
-            report(accountID: "claude-b", resetCredits: 0, quotas: [session]),
-            report(accountID: "claude-c", resetCredits: 1, quotas: [session]),
-            report(accountID: "claude-d", fetchedAt: timestamp.addingTimeInterval(-3_600), resetCredits: 2, quotas: [session])
+            report(accountID: "claude-b", resetCredits: ResetCredits(available: 0), quotas: [session]),
+            report(accountID: "claude-c", resetCredits: ResetCredits(available: 1), quotas: [session]),
+            report(accountID: "claude-d", fetchedAt: timestamp.addingTimeInterval(-3_600), resetCredits: ResetCredits(available: 2), quotas: [session])
         ])
 
         let accounts = try XCTUnwrap(snapshot.providerDetail(of: "anthropic", now: timestamp)).accounts
 
-        XCTAssertEqual(accounts.map(\.resetCredits), [nil, nil, 1, 2])
+        XCTAssertEqual(accounts.map(\.resetCredits), [nil, nil, ResetCredits(available: 1), ResetCredits(available: 2)])
         XCTAssertEqual(accounts[0].accessibilityLabel(accountLabel: "Account 1", now: timestamp), "Account 1, 5 hour 30% used")
         XCTAssertEqual(accounts[1].accessibilityLabel(accountLabel: "Account 2", now: timestamp), "Account 2, 5 hour 30% used")
         XCTAssertEqual(accounts[2].accessibilityLabel(accountLabel: "Account 3", now: timestamp), "Account 3, 5 hour 30% used, 1 reset credit available")
@@ -839,6 +839,27 @@ final class UsageDomainTests: XCTestCase {
             accounts[3].accessibilityLabel(accountLabel: "Account 4", now: timestamp),
             "Account 4, 5 hour 30% used, stale, 2 reset credits available"
         )
+    }
+
+    func testResetCreditsSayWhatCanBeSpentNowAndWhenTheSoonestExpires() throws {
+        let session = quota(id: "session", remainingPercent: 70)
+        let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
+            report(
+                accountID: "claude-a",
+                resetCredits: ResetCredits(available: 2, redeemable: 1, earliestExpiry: timestamp.addingTimeInterval(2 * 86_400)),
+                quotas: [session]
+            ),
+            report(accountID: "claude-b", resetCredits: ResetCredits(available: 2, redeemable: 0), quotas: [session]),
+            report(accountID: "claude-c", resetCredits: ResetCredits(available: 1, earliestExpiry: timestamp.addingTimeInterval(-60)), quotas: [session])
+        ])
+
+        let accounts = try XCTUnwrap(snapshot.providerDetail(of: "anthropic", now: timestamp)).accounts
+
+        XCTAssertEqual(accounts.map { $0.accessibilityLabel(accountLabel: "Account", now: timestamp) }, [
+            "Account, 5 hour 30% used, 2 reset credits available, 1 usable now, soonest expires in 2 days",
+            "Account, 5 hour 30% used, 2 reset credits available, none usable now",
+            "Account, 5 hour 30% used, 1 reset credit available, soonest reset expired"
+        ])
     }
 
     func testTheHeaderSaysHowOldTheDataIsAndWhatTheRefreshIsDoing() {
@@ -1040,7 +1061,7 @@ final class UsageDomainTests: XCTestCase {
                     windowID: "1w",
                     windowLabel: "Weekly",
                     durationMilliseconds: 604_800_000,
-                    scope: QuotaScope(provider: "mistral", accountID: nil, organizationID: nil, projectID: nil, modelID: nil, tier: nil, windowID: "1w", shared: true),
+                    scope: QuotaScope(provider: "mistral", accountID: nil, organizationID: nil, projectID: nil, tier: nil),
                     label: "Chat (Weekly)",
                     remainingPercent: 5
                 )
@@ -1083,23 +1104,23 @@ final class UsageDomainTests: XCTestCase {
     }
 
     func testAScopeTierNarrowsAClaudeOrCodexQuotaWhateverItsLabelSaysButNotAnotherProvidersPlanTier() throws {
-        // As OMP flags them: Claude's whole windows are shared and its meters are not, while a Codex meter is shared like the rest.
-        func scope(_ provider: String, tier: String?, shared: Bool?) -> QuotaScope {
-            QuotaScope(provider: provider, accountID: nil, organizationID: nil, projectID: nil, modelID: nil, tier: tier, windowID: "7d", shared: shared)
+        // OMP flags a Codex meter as shared like its whole window, so the tier alone tells a meter from the window it narrows.
+        func scope(_ provider: String, tier: String?) -> QuotaScope {
+            QuotaScope(provider: provider, accountID: nil, organizationID: nil, projectID: nil, tier: tier)
         }
         let snapshot = UsageSnapshot(generatedAt: timestamp, reportDrafts: [
             report(provider: "anthropic", accountID: "claude-a", quotas: [
-                quota(id: "anthropic:7d", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("anthropic", tier: nil, shared: true), label: "Claude 7 Day", remainingPercent: 70),
+                quota(id: "anthropic:7d", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("anthropic", tier: nil), label: "Claude 7 Day", remainingPercent: 70),
                 // The scope names the meter and the label does not, so there is no parenthetical for the label rule to read.
-                quota(id: "anthropic:7d:fable", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("anthropic", tier: "fable", shared: nil), label: "Claude 7 Day Fable", remainingPercent: 5)
+                quota(id: "anthropic:7d:fable", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("anthropic", tier: "fable"), label: "Claude 7 Day Fable", remainingPercent: 5)
             ]),
             report(provider: "openai-codex", accountID: "codex-a", quotas: [
-                quota(id: "openai-codex:primary", windowID: "7d", windowLabel: "7 days", durationMilliseconds: 604_800_000, scope: scope("openai-codex", tier: nil, shared: true), label: "7 days", remainingPercent: 60),
-                quota(id: "openai-codex:spark:primary", windowID: "7d", windowLabel: "7 days", durationMilliseconds: 604_800_000, scope: scope("openai-codex", tier: "spark", shared: true), label: "7 days Spark", remainingPercent: 2)
+                quota(id: "openai-codex:primary", windowID: "7d", windowLabel: "7 days", durationMilliseconds: 604_800_000, scope: scope("openai-codex", tier: nil), label: "7 days", remainingPercent: 60),
+                quota(id: "openai-codex:spark:primary", windowID: "7d", windowLabel: "7 days", durationMilliseconds: 604_800_000, scope: scope("openai-codex", tier: "spark"), label: "7 days Spark", remainingPercent: 2)
             ]),
             // The tier of another provider is the name of its plan. It narrows nothing, so the most used window still stands for the account.
             report(provider: "devin", accountID: "devin-a", quotas: [
-                quota(id: "daily", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("devin", tier: "Pro", shared: nil), label: "Weekly Quota", remainingPercent: 40)
+                quota(id: "daily", windowID: "7d", windowLabel: "7 Day", durationMilliseconds: 604_800_000, scope: scope("devin", tier: "Pro"), label: "Weekly Quota", remainingPercent: 40)
             ])
         ])
 
@@ -1169,7 +1190,7 @@ final class UsageDomainTests: XCTestCase {
         projectID: String? = nil,
         label: String? = nil,
         fetchedAt: Date? = nil,
-        resetCredits: Int? = nil,
+        resetCredits: ResetCredits? = nil,
         quotas: [UsageQuotaDraft]? = nil
     ) -> UsageReportDraft {
         UsageReportDraft(
@@ -1197,8 +1218,7 @@ final class UsageDomainTests: XCTestCase {
             QuotaWindow(
                 identity: QuotaWindowIdentity(id: $0),
                 label: windowLabel ?? $0,
-                durationMilliseconds: durationMilliseconds,
-                resetLabel: nil
+                durationMilliseconds: durationMilliseconds
             )
         }
         let amount = remainingPercent.map {
@@ -1217,7 +1237,7 @@ final class UsageDomainTests: XCTestCase {
             id: "credits",
             label: "Credits",
             scope: nil,
-            window: QuotaWindow(identity: QuotaWindowIdentity(id: "monthly"), label: "Monthly", durationMilliseconds: nil, resetLabel: nil),
+            window: QuotaWindow(identity: QuotaWindowIdentity(id: "monthly"), label: "Monthly", durationMilliseconds: nil),
             amount: UsageAmount(used: used, limit: limit, remaining: nil, usedFraction: usedFraction, remainingFraction: nil, unit: unit),
             status: .available,
             resetsAt: nil
@@ -1411,8 +1431,8 @@ enum RealisticFixture {
             UsageQuotaDraft(
                 id: row.id,
                 label: row.label,
-                scope: QuotaScope(provider: "xai-oauth", accountID: nil, organizationID: nil, projectID: nil, modelID: nil, tier: nil, windowID: "1w", shared: true),
-                window: QuotaWindow(identity: QuotaWindowIdentity(id: "1w"), label: "Weekly", durationMilliseconds: 604_800_000, resetLabel: nil),
+                scope: QuotaScope(provider: "xai-oauth", accountID: nil, organizationID: nil, projectID: nil, tier: nil),
+                window: QuotaWindow(identity: QuotaWindowIdentity(id: "1w"), label: "Weekly", durationMilliseconds: 604_800_000),
                 amount: UsageAmount(
                     used: row.used,
                     limit: 100,
@@ -1462,7 +1482,7 @@ enum RealisticFixture {
             id: label,
             label: label,
             scope: nil,
-            window: QuotaWindow(identity: QuotaWindowIdentity(id: window), label: windowLabel, durationMilliseconds: duration, resetLabel: nil),
+            window: QuotaWindow(identity: QuotaWindowIdentity(id: window), label: windowLabel, durationMilliseconds: duration),
             amount: used.map {
                 UsageAmount(used: $0, limit: 100, remaining: 100 - $0, usedFraction: $0 / 100, remainingFraction: (100 - $0) / 100, unit: unit)
             },
