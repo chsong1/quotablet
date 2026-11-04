@@ -49,6 +49,27 @@ final class OMPClientTests: XCTestCase {
         }
     }
 
+    func testHelloRunsThePromptWithoutASessionAndNamesTheProvider() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletOMPTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try makeExecutable(
+            in: directory,
+            body: """
+            #!/bin/sh
+            [ "$#" -eq 5 ] || exit 64
+            [ "$1" = "-p" ] && [ "$2" = "hi" ] || exit 64
+            [ "$3" = "--provider" ] && [ "$4" = "anthropic" ] || exit 64
+            [ "$5" = "--no-session" ] || exit 64
+            """
+        )
+
+        try await OMPClient().sayHello(
+            provider: "anthropic",
+            configuration: CLIConfiguration(executablePath: executable.path, homeDirectory: directory)
+        )
+    }
+
     func testBrokenExplicitPathDoesNotFallBackToAutomaticDiscovery() async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletOMPTests-\(UUID().uuidString)", isDirectory: true)
         do {

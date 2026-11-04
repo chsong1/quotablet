@@ -5,29 +5,36 @@ struct PersistedSettings: Codable, Equatable, Sendable {
     var executablePath: String?
     // Providers the user took out of the menu bar, by provider id. The panel still shows them.
     var hiddenMenuBarProviders: Set<String>
+    // Whether Quotablet sends a hello when a provider has a window OMP has not started yet.
+    var startsIdleWindows: Bool
 
-    init(executablePath: String?, hiddenMenuBarProviders: Set<String> = []) {
+    init(executablePath: String?, hiddenMenuBarProviders: Set<String> = [], startsIdleWindows: Bool = false) {
         self.executablePath = executablePath
         self.hiddenMenuBarProviders = hiddenMenuBarProviders
+        self.startsIdleWindows = startsIdleWindows
     }
 
     private enum CodingKeys: String, CodingKey {
-        case executablePath, hiddenMenuBarProviders
+        case executablePath, hiddenMenuBarProviders, startsIdleWindows
     }
 
-    // Settings saved before providers could be hidden hide none. An unreadable list hides none either, and never costs the OMP path.
+    // Settings saved before providers could be hidden hide none, and one saved before idle windows could start starts none.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
         hiddenMenuBarProviders = Set((try? container.decodeIfPresent([String].self, forKey: .hiddenMenuBarProviders)) ?? [])
+        startsIdleWindows = (try? container.decodeIfPresent(Bool.self, forKey: .startsIdleWindows)) ?? false
     }
 
-    // With nothing hidden the key is left out, so the file stays as it was until the user hides a provider.
+    // With nothing hidden and no hello asked for, both keys are left out, so the file stays as it was.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(executablePath, forKey: .executablePath)
         if !hiddenMenuBarProviders.isEmpty {
             try container.encode(hiddenMenuBarProviders.sorted(), forKey: .hiddenMenuBarProviders)
+        }
+        if startsIdleWindows {
+            try container.encode(true, forKey: .startsIdleWindows)
         }
     }
 }
