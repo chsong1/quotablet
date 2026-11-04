@@ -488,6 +488,104 @@ final class UsageStoreTests: XCTestCase {
         )
     }
 
+    func testAnIdleWindowSendsOneHelloPerProviderUntilItsReportChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshot = idleWindowSnapshot(usedFraction: 0, resetsAt: nil)
+        let fetcher = SequencedFetcher([.success(snapshot), .success(snapshot)])
+        let recorder = HelloRecorder()
+        let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+        store.helloSender = { provider, _ in await recorder.record(provider) }
+
+        await store.setStartsIdleWindows(true)
+        await store.refresh()
+        await store.refresh()
+
+
+        let providers = await recorder.providers
+        XCTAssertEqual(providers, ["anthropic"])
+        await store.shutdown()
+    }
+
+    func testNoHelloIsSentWhileTheChoiceIsOffTheAccountHasNoRoomOrTheWindowIsRunning() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshots = [
+            idleWindowSnapshot(usedFraction: 0, resetsAt: nil),
+            idleWindowSnapshot(usedFraction: 1, resetsAt: nil),
+            idleWindowSnapshot(usedFraction: 0, resetsAt: Date(timeIntervalSince1970: 1_800_003_600))
+        ]
+        let fetcher = SequencedFetcher([.success(snapshots[0]), .success(snapshots[1]), .success(snapshots[2])])
+        let recorder = HelloRecorder()
+        let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
+            try await fetcher.fetch(configuration)
+        }
+        store.helloSender = { provider, _ in await recorder.record(provider) }
+
+        await store.refresh()
+        await store.setStartsIdleWindows(true)
+        await store.refresh()
+        await store.refresh()
+
+        let providers = await recorder.providers
+        XCTAssertEqual(providers, [])
+        await store.shutdown()
+    }
+
+    func testTheIdleWindowChoiceSurvivesARestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = AppPersistence(directoryURL: directory)
+        let store = UsageStore(persistence: persistence) { _ in
+            throw OMPClientError.invalidResponse
+        }
+
+        await store.setStartsIdleWindows(true)
+        await store.shutdown()
+
+        let restarted = UsageStore(persistence: persistence) { _ in
+            throw OMPClientError.invalidResponse
+        }
+        await restarted.start()
+        XCTAssertTrue(restarted.startsIdleWindows)
+        await restarted.shutdown()
+    }
+
+    private func idleWindowSnapshot(usedFraction: Double, resetsAt: Date?) -> UsageSnapshot {
+        let amount = UsageAmount(
+            used: usedFraction * 100,
+            limit: 100,
+            remaining: 100 - usedFraction * 100,
+            usedFraction: usedFraction,
+            remainingFraction: 1 - usedFraction,
+            unit: .percent
+        )
+        let quota = UsageQuotaDraft(
+            id: "anthropic:5h",
+            label: "5 Hour",
+            scope: QuotaScope(provider: "anthropic", accountID: "acct-idle", organizationID: nil, projectID: nil, tier: nil),
+            window: QuotaWindow(identity: QuotaWindowIdentity(id: "5h"), label: "5 Hour", durationMilliseconds: 18_000_000),
+            amount: amount,
+            status: usedFraction >= 1 ? .exhausted : .available,
+            resetsAt: resetsAt
+        )
+        return UsageSnapshot(
+            generatedAt: Date(),
+            reportDrafts: [
+                UsageReportDraft(
+                    provider: "anthropic",
+                    sourceAccount: SourceAccountIdentity(accountID: "acct-idle", organizationID: nil, projectID: nil),
+                    privateDisplayLabel: "idle@example.invalid",
+                    fetchedAt: Date(),
+                    resetCredits: nil,
+                    quotas: [quota]
+                )
+            ]
+        )
+    }
+
     private var fetchedAt: Date { Date(timeIntervalSince1970: 1_800_000_000) }
 
     private func refreshedStore(_ snapshot: UsageSnapshot, directory: URL) async -> UsageStore {
@@ -644,4 +742,12 @@ private actor ScheduledRefreshCancellationFetcher {
     func callCount() -> Int { calls }
 
     func cancellationCount() -> Int { cancellations }
+}
+
+private actor HelloRecorder {
+    private(set) var providers: [String] = []
+
+    func record(_ provider: String) {
+        providers.append(provider)
+    }
 }

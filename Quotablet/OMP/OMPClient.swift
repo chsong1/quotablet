@@ -61,6 +61,22 @@ struct OMPClient: Sendable {
         return try Self.decode(data, receivedAt: Date())
     }
 
+    // Sends the shortest possible request through OMP so a provider starts the window it has not begun. The provider's own account
+    // selection decides which account answers, so the caller names the provider, not the account.
+    func sayHello(provider: String, configuration: CLIConfiguration) async throws {
+        let executable = try resolveExecutable(configuration: configuration)
+        let environment = processEnvironment(configuration: configuration, executable: executable)
+        let invocation = ProcessInvocation(
+            executableURL: executable,
+            workingDirectory: configuration.homeDirectory,
+            environment: environment,
+            arguments: ["-p", "hi", "--provider", provider, "--no-session"],
+            maximumOutputBytes: 256 * 1024,
+            timeout: 60
+        )
+        _ = try await invocation.run()
+    }
+
     static func decode(_ data: Data, receivedAt: Date = Date()) throws -> UsageSnapshot {
         let envelope: OMPWireEnvelope
         do {
@@ -426,6 +442,7 @@ private final class ProcessInvocation: @unchecked Sendable {
     private let executableURL: URL
     private let workingDirectory: URL
     private let environment: [String: String]
+    private let arguments: [String]
     private let maximumOutputBytes: Int
     private let timeout: TimeInterval
 
@@ -448,12 +465,14 @@ private final class ProcessInvocation: @unchecked Sendable {
         executableURL: URL,
         workingDirectory: URL,
         environment: [String: String],
+        arguments: [String] = ["usage", "--json"],
         maximumOutputBytes: Int,
         timeout: TimeInterval
     ) {
         self.executableURL = executableURL
         self.workingDirectory = workingDirectory
         self.environment = environment
+        self.arguments = arguments
         self.maximumOutputBytes = maximumOutputBytes
         self.timeout = timeout
     }
@@ -481,7 +500,7 @@ private final class ProcessInvocation: @unchecked Sendable {
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = executableURL
-        process.arguments = ["usage", "--json"]
+        process.arguments = arguments
         process.environment = environment
         process.currentDirectoryURL = workingDirectory
         process.standardInput = FileHandle.nullDevice

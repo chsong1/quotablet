@@ -27,12 +27,20 @@ final class UsageStore {
     private(set) var persistenceWarning = false
     private(set) var executablePath: String?
     private(set) var hiddenMenuBarProviders: Set<String> = []
+    // Whether a refresh that finds a window OMP has not started sends the hello that starts it.
+    private(set) var startsIdleWindows = false
     private(set) var logos = ProviderLogoCatalog.empty
     private(set) var revealsIdentifiers = true
     private(set) var presentationDate = Date()
 
     @ObservationIgnored private let persistence: AppPersistence
     @ObservationIgnored private let fetcher: @Sendable (CLIConfiguration) async throws -> UsageSnapshot
+    // The command a hello runs. A test replaces it; the app sends through OMP.
+    @ObservationIgnored var helloSender: @Sendable (String, CLIConfiguration) async throws -> Void = { provider, configuration in
+        try await OMPClient().sayHello(provider: provider, configuration: configuration)
+    }
+    // The last hello sent for each provider, so a cached report cannot ask for another one straight away.
+    @ObservationIgnored private var helloAttempts: [String: Date] = [:]
     private var refreshState = RefreshState.idle
     @ObservationIgnored private let schedulerInterval: Duration
     @ObservationIgnored private var schedulerTask: Task<Void, Never>?
@@ -109,6 +117,7 @@ final class UsageStore {
 
         executablePath = Self.normalizedPath(stored.settings.executablePath)
         hiddenMenuBarProviders = stored.settings.hiddenMenuBarProviders
+        startsIdleWindows = stored.settings.startsIdleWindows
         reloadLogosIfChanged()
         snapshot = stored.snapshot
         snapshotOrigin = stored.snapshot == nil ? nil : .cached
@@ -177,6 +186,13 @@ final class UsageStore {
         let hidden = shows ? hiddenMenuBarProviders.subtracting([provider]) : hiddenMenuBarProviders.union([provider])
         guard hidden != hiddenMenuBarProviders else { return }
         hiddenMenuBarProviders = hidden
+        await persistSettings()
+    }
+
+    // Turns the hello on or off. The next refresh acts on the new choice, so the panel never has to trigger one itself.
+    func setStartsIdleWindows(_ starts: Bool) async {
+        guard !isShuttingDown, starts != startsIdleWindows else { return }
+        startsIdleWindows = starts
         await persistSettings()
     }
 
@@ -262,6 +278,7 @@ final class UsageStore {
         guard case .running(let activeID, _) = refreshState, activeID == id else { return }
         refreshState = .idle
         presentationDate = Date()
+        let now = presentationDate
         switch outcome {
         case .success(let snapshot):
             self.snapshot = snapshot
@@ -270,6 +287,7 @@ final class UsageStore {
             if !(await persistence.save(snapshot: snapshot)) {
                 persistenceWarning = true
             }
+            await startIdleWindows(in: snapshot, now: now)
         case .failure(let error):
             guard error != .cancelled else { return }
             lastError = error
@@ -277,11 +295,35 @@ final class UsageStore {
     }
 
     private func persistSettings() async {
-        let settings = PersistedSettings(executablePath: executablePath, hiddenMenuBarProviders: hiddenMenuBarProviders)
+        let settings = PersistedSettings(
+            executablePath: executablePath,
+            hiddenMenuBarProviders: hiddenMenuBarProviders,
+            startsIdleWindows: startsIdleWindows
+        )
         if !(await persistence.save(settings: settings)) {
             persistenceWarning = true
         }
     }
+
+    // Sends one hello per provider whose report shows a window OMP has not started. A provider keeps a cooldown because its cached report
+    // can keep saying "not started" after the hello, and because a refreshed report replaces the window within minutes.
+    private func startIdleWindows(in snapshot: UsageSnapshot, now: Date) async {
+        guard startsIdleWindows else { return }
+        let configuration = CLIConfiguration(executablePath: executablePath)
+        for usage in snapshot.providerUsage(now: now) {
+            let provider = usage.provider
+            if let last = helloAttempts[provider], now.timeIntervalSince(last) < Self.helloRetryInterval { continue }
+            guard
+                let detail = snapshot.providerDetail(of: provider, now: now),
+                detail.accounts.contains(where: \.needsStartingHello)
+            else { continue }
+            helloAttempts[provider] = now
+            try? await helloSender(provider, configuration)
+        }
+    }
+
+    // Long enough to outlast a cached usage report, short enough to try again while the window is still idle.
+    private static let helloRetryInterval: TimeInterval = 30 * 60
 
     private func reloadLogosIfChanged() {
         if logoLibrary.reloadIfChanged() {

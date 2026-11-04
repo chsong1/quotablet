@@ -839,6 +839,17 @@ struct AccountDetail: Equatable, Sendable {
     var urgency: QuotaUrgency? { report.topUrgency }
     var status: AccountStatus { report.accountStatus }
 
+    // True when a window OMP reports has no reset time and nothing used: the provider starts that window on the first request,
+    // so until one arrives the clock has not begun. A window that reports a reset time is already running.
+    var hasWindowWaitingToStart: Bool {
+        windows.contains { $0.resetsAt == nil && $0.usedFraction == 0 && $0.urgency != .exhausted }
+    }
+
+    // The hello OMP needs to start such a window. Only an account with room left can send one; a spent account would be refused.
+    var needsStartingHello: Bool {
+        !isStale && (capacityFraction ?? 1) < 1 && hasWindowWaitingToStart
+    }
+
     // Credits that reset a quota, as the account's capsule counts them. Nil when OMP reports none.
     var resetCredits: ResetCredits? { report.resetCredits.flatMap { $0.available > 0 ? $0 : nil } }
 

@@ -214,6 +214,8 @@ struct UsagePanel: View {
                 }
             }
             Divider()
+            Toggle("Start idle windows with a hello", isOn: startsIdleWindows)
+                .help("Send one short request through OMP when a provider has a window that has not started, so its reset clock begins.")
             Button("Quit Quotablet", action: quit)
                 .keyboardShortcut("q", modifiers: .command)
         } label: {
@@ -225,13 +227,20 @@ struct UsagePanel: View {
         .fixedSize()
         .frame(width: 30, height: 30)
         .accessibilityLabel("More")
-        .help("Choose OMP, pick the providers in the menu bar, or quit Quotablet.")
+        .help("Choose OMP, start idle windows, pick the providers in the menu bar, or quit Quotablet.")
     }
 
     private func showsInMenuBar(_ provider: String) -> Binding<Bool> {
         Binding(
             get: { !store.hiddenMenuBarProviders.contains(provider) },
             set: { shows in Task { await store.setShowsInMenuBar(shows, provider: provider) } }
+        )
+    }
+
+    private var startsIdleWindows: Binding<Bool> {
+        Binding(
+            get: { store.startsIdleWindows },
+            set: { starts in Task { await store.setStartsIdleWindows(starts) } }
         )
     }
 
