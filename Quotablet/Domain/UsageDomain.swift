@@ -99,10 +99,7 @@ struct QuotaScope: Codable, Equatable, Sendable {
     let accountID: String?
     let organizationID: String?
     let projectID: String?
-    let modelID: String?
     let tier: String?
-    let windowID: String?
-    let shared: Bool?
 }
 
 struct QuotaWindowIdentity: Codable, Equatable, Sendable {
@@ -134,7 +131,6 @@ struct QuotaWindow: Codable, Equatable, Sendable {
     let identity: QuotaWindowIdentity
     let label: String
     let durationMilliseconds: Double?
-    let resetLabel: String?
 
     // The duration OMP reports, else the period the label names. A window that gives neither is 0, which ranks it shortest.
     var effectiveLengthMilliseconds: Double {
@@ -184,6 +180,38 @@ enum AccountIdentity: Codable, Equatable, Sendable {
     case transient(TransientAccountIdentity)
 }
 
+// What OMP reports about an account's reset credits: how many it holds, how many OMP may spend now, and when the soonest one expires.
+// An account can hold credits back until a window reaches its wall, so a count alone does not say what can be spent.
+// A report saved before this detail existed carries only the count, as `"resetCredits": 2`.
+struct ResetCredits: Codable, Equatable, Sendable {
+    let available: Int
+    let redeemable: Int?
+    let earliestExpiry: Date?
+
+    init(available: Int, redeemable: Int? = nil, earliestExpiry: Date? = nil) {
+        self.available = available
+        self.redeemable = redeemable
+        self.earliestExpiry = earliestExpiry
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case available, redeemable, earliestExpiry
+    }
+
+    init(from decoder: Decoder) throws {
+        if let count = try? decoder.singleValueContainer().decode(Int.self) {
+            self.init(available: count)
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            available: try container.decode(Int.self, forKey: .available),
+            redeemable: try container.decodeIfPresent(Int.self, forKey: .redeemable),
+            earliestExpiry: try container.decodeIfPresent(Date.self, forKey: .earliestExpiry)
+        )
+    }
+}
+
 struct UsageQuotaDraft: Equatable, Sendable {
     let id: String
     let label: String
@@ -201,7 +229,7 @@ struct UsageReportDraft: Equatable, Sendable {
     // The host of the account's email address, as `AccountEmail.domain(of:)` reads it. A draft built without one has none.
     var emailDomain: String? = nil
     let fetchedAt: Date?
-    let resetCredits: Int?
+    let resetCredits: ResetCredits?
     let quotas: [UsageQuotaDraft]
 }
 
@@ -310,7 +338,7 @@ struct UsageReport: Codable, Equatable, Identifiable, Sendable {
     // The host of the account's email address. The badge reads it only while identifiers are revealed. A report saved before it existed has none.
     let emailDomain: String?
     let fetchedAt: Date?
-    let resetCredits: Int?
+    let resetCredits: ResetCredits?
     let quotas: [UsageQuota]
 
     var revealedAccountLabel: String? {
@@ -812,11 +840,24 @@ struct AccountDetail: Equatable, Sendable {
     var status: AccountStatus { report.accountStatus }
 
     // Credits that reset a quota, as the account's capsule counts them. Nil when OMP reports none.
-    var resetCredits: Int? { report.resetCredits.flatMap { $0 > 0 ? $0 : nil } }
+    var resetCredits: ResetCredits? { report.resetCredits.flatMap { $0.available > 0 ? $0 : nil } }
 
-    // For example "2 reset credits available".
-    var resetCreditsPhrase: String? {
-        resetCredits.map { "\($0) reset credit\($0 == 1 ? "" : "s") available" }
+    // For example "2 reset credits available", plus what can be spent now and when the soonest expires when OMP says.
+    func resetCreditsPhrase(now: Date) -> String? {
+        guard let resetCredits else { return nil }
+        let count = resetCredits.available
+        var parts = ["\(count) reset credit\(count == 1 ? "" : "s") available"]
+        if let redeemable = resetCredits.redeemable, redeemable < count {
+            parts.append(redeemable == 0 ? "none usable now" : "\(redeemable) usable now")
+        }
+        if let earliestExpiry = resetCredits.earliestExpiry {
+            switch UsageFormatting.countdown(to: earliestExpiry, now: now) {
+            case .remaining(_, let spoken): parts.append("soonest expires in \(spoken)")
+            case .passed: parts.append("soonest reset expired")
+            case .unknown: break
+            }
+        }
+        return parts.joined(separator: ", ")
     }
 
     // The wording of product usage. OMP reports the figures and says nothing about what they are a share of, so the page names the source and no more.
@@ -873,7 +914,7 @@ struct AccountDetail: Equatable, Sendable {
             parts.append("product usage reported by OMP: \(productUsage.map(\.phrase).joined(separator: "; "))")
         }
         if isStale { parts.append("stale") }
-        if let resetCreditsPhrase { parts.append(resetCreditsPhrase) }
+        if let phrase = resetCreditsPhrase(now: now) { parts.append(phrase) }
         return parts.joined(separator: ", ")
     }
 }

@@ -534,7 +534,8 @@ private struct AccountRow: View {
                 }
             }
             if let credits = account.resetCredits {
-                ResetCreditsCapsule(count: credits)
+                ResetCreditsCapsule(count: credits.available)
+                    .help(account.resetCreditsPhrase(now: now) ?? "")
             }
             if account.isStale {
                 StaleMark()
@@ -594,7 +595,8 @@ private struct AccountCard: View {
                     StatusGlyph(urgency: urgency)
                 }
                 if let credits = account.resetCredits {
-                    ResetCreditsCapsule(count: credits)
+                    ResetCreditsCapsule(count: credits.available)
+                        .help(account.resetCreditsPhrase(now: now) ?? "")
                 }
                 Spacer(minLength: 8)
                 if account.isStale {

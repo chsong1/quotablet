@@ -79,7 +79,14 @@ final class OMPClientTests: XCTestCase {
                     "projectId": "synthetic-project",
                     "email": "person@example.invalid"
                   },
-                  "resetCredits": { "availableCount": 2, "credits": [] },
+                  "resetCredits": {
+                    "availableCount": 2,
+                    "redeemableCount": 1,
+                    "credits": [
+                      { "grantedAt": "2026-11-01T22:24:05.937007Z", "expiresAt": "2026-12-01T22:24:05.937007Z", "status": "available" },
+                      { "grantedAt": "2026-10-31T20:04:37.981039Z", "expiresAt": "2026-11-30T20:04:37.981039Z", "status": "available" }
+                    ]
+                  },
                   "limits": [
                     {
                       "id": "anthropic:5h",
@@ -153,21 +160,24 @@ final class OMPClientTests: XCTestCase {
             projectID: "synthetic-project"
         ))
         XCTAssertEqual(report.privateDisplayLabel, "person@example.invalid")
-        XCTAssertEqual(report.resetCredits, 2)
+        let credits = try XCTUnwrap(report.resetCredits)
+        XCTAssertEqual(credits.available, 2)
+        XCTAssertEqual(credits.redeemable, 1)
+        XCTAssertEqual(
+            try XCTUnwrap(credits.earliestExpiry).timeIntervalSince1970,
+            1_796_069_077.981039,
+            accuracy: 0.000_001
+        )
         XCTAssertEqual(window.identity.id, "5h")
         XCTAssertEqual(window.label, "5 Hour")
         XCTAssertEqual(window.durationMilliseconds, 18_000_000.0)
         XCTAssertEqual(quota.resetsAt, Date(timeIntervalSince1970: 1_800_003_600))
-        XCTAssertEqual(window.resetLabel, "tick")
         XCTAssertEqual(quota.scope, QuotaScope(
             provider: "anthropic",
             accountID: "synthetic-account",
             organizationID: "synthetic-org",
             projectID: "synthetic-project",
-            modelID: "synthetic-model",
-            tier: "pro",
-            windowID: "5h",
-            shared: true
+            tier: "pro"
         ))
         XCTAssertEqual(quota.scope?.tier, "pro")
         XCTAssertEqual(amount.displayedRemaining, 75)
@@ -479,6 +489,82 @@ final class OMPClientTests: XCTestCase {
         XCTAssertNil(try reason(""))
         XCTAssertNil(try reason("   "))
         XCTAssertNil(try reason(nil))
+    }
+
+    // OMP rolls a provider's capacity up itself. Quotablet draws its own figure from the same accounts and never reads that block,
+    // so this compares the two: a change to either side's policy shows up here instead of on the menu bar.
+    func testTheProvidersFigureMatchesTheCapacityRollUpOMPReportsForTheSameAccounts() throws {
+        struct CapacityRow: Decodable {
+            let window: String
+            let durationMs: Double?
+            let meter: String?
+            let accounts: Int
+            let usedAccounts: Double
+        }
+
+        struct CapacityEnvelope: Decodable {
+            let capacity: [String: [CapacityRow]]
+        }
+
+        func limit(_ window: String, _ duration: Int, _ used: String, _ usedFraction: String) -> String {
+            """
+            {
+              "id": "anthropic:\(window)",
+              "label": "Claude \(window)",
+              "scope": { "provider": "anthropic", "windowId": "\(window)", "shared": true },
+              "window": { "id": "\(window)", "label": "\(window)", "durationMs": \(duration) },
+              "amount": { "used": \(used), "limit": 100, "usedFraction": \(usedFraction), "unit": "percent" },
+              "status": "ok"
+            }
+            """
+        }
+
+        func report(_ account: String, _ used7d: String, _ usedFraction7d: String) -> String {
+            """
+            {
+              "provider": "anthropic",
+              "fetchedAt": 1800000000000,
+              "metadata": { "accountId": "\(account)" },
+              "limits": [
+                \(limit("5h", 18_000_000, "10", "0.1")),
+                \(limit("7d", 604_800_000, used7d, usedFraction7d))
+              ]
+            }
+            """
+        }
+
+        let payload = Data(
+            """
+            {
+              "generatedAt": 1800000000000,
+              "reports": [
+                \(report("account-a", "30", "0.3")),
+                \(report("account-b", "60", "0.6")),
+                \(report("account-c", "90", "0.9"))
+              ],
+              "capacity": {
+                "anthropic": [
+                  { "window": "5h", "durationMs": 18000000, "accounts": 3, "usedAccounts": 0.30000000000000004, "remainingAccounts": 2.7 },
+                  { "window": "7d", "durationMs": 604800000, "accounts": 3, "usedAccounts": 1.8, "remainingAccounts": 1.2 },
+                  { "window": "7d", "durationMs": 604800000, "meter": "fable", "accounts": 3, "usedAccounts": 0, "remainingAccounts": 3 }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = try OMPClient.decode(payload, receivedAt: now)
+        let usage = try XCTUnwrap(snapshot.providerUsage(now: now).first { $0.provider == "anthropic" })
+        // The same payload read without the app's types, so the comparison uses OMP's numbers and not a copy of the app's.
+        let capacity = try JSONDecoder().decode(CapacityEnvelope.self, from: payload).capacity
+        let rows = try XCTUnwrap(capacity["anthropic"])
+        // The app's figure stands for the account's whole window, which is the longest window that names no meter.
+        let window = try XCTUnwrap(rows.filter { $0.meter == nil }.max { ($0.durationMs ?? 0) < ($1.durationMs ?? 0) })
+
+        XCTAssertEqual(window.window, "7d")
+        XCTAssertEqual(window.accounts, usage.measured.count)
+        XCTAssertEqual(try XCTUnwrap(usage.usedFraction), window.usedAccounts / Double(window.accounts), accuracy: 0.000_001)
     }
 
     private func makeExecutable(in directory: URL, body: String) throws -> URL {

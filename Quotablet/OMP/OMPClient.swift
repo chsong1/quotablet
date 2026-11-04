@@ -77,8 +77,7 @@ struct OMPClient: Sendable {
                     QuotaWindow(
                         identity: QuotaWindowIdentity(id: $0.id),
                         label: $0.label,
-                        durationMilliseconds: $0.durationMs,
-                        resetLabel: $0.resetLabel
+                        durationMilliseconds: $0.durationMs
                     )
                 }
                 let scope = QuotaScope(
@@ -86,10 +85,7 @@ struct OMPClient: Sendable {
                     accountID: limit.scope.accountID,
                     organizationID: limit.scope.organizationID,
                     projectID: limit.scope.projectID,
-                    modelID: limit.scope.modelID,
-                    tier: limit.scope.tier,
-                    windowID: limit.scope.windowID,
-                    shared: limit.scope.shared
+                    tier: limit.scope.tier
                 )
                 return UsageQuotaDraft(
                     id: limit.id,
@@ -114,7 +110,7 @@ struct OMPClient: Sendable {
                 privateDisplayLabel: privateDisplayLabel,
                 emailDomain: AccountEmail.domain(of: report.metadata?.email),
                 fetchedAt: report.fetchedAt.date,
-                resetCredits: report.resetCredits?.availableCount,
+                resetCredits: resetCredits(from: report.resetCredits),
                 quotas: quotas
             )
         }
@@ -185,6 +181,18 @@ struct OMPClient: Sendable {
             return nil
         }
         return identity
+    }
+
+    // The count OMP gives, plus what it may spend now and when the soonest credit expires. A credit with an unreadable time is dropped,
+    // so it never costs the report around it.
+    private static func resetCredits(from wire: OMPWireResetCredits?) -> ResetCredits? {
+        wire.map { credits in
+            ResetCredits(
+                available: credits.availableCount,
+                redeemable: credits.redeemableCount,
+                earliestExpiry: credits.credits?.compactMap { $0.value?.expiresAt?.date }.min()
+            )
+        }
     }
 
     private static func uniqueNonEmpty(_ values: [String?]) -> String? {
@@ -338,20 +346,14 @@ private struct OMPWireScope: Decodable {
     let accountID: String?
     let organizationID: String?
     let projectID: String?
-    let modelID: String?
     let tier: String?
-    let windowID: String?
-    let shared: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case provider
         case accountID = "accountId"
         case organizationID = "orgId"
         case projectID = "projectId"
-        case modelID = "modelId"
         case tier
-        case windowID = "windowId"
-        case shared
     }
 }
 
@@ -360,7 +362,6 @@ private struct OMPWireWindow: Decodable {
     let label: String
     let durationMs: Double?
     let resetsAt: OMPWireDate?
-    let resetLabel: String?
 }
 
 private struct OMPWireAmount: Decodable {
@@ -374,6 +375,12 @@ private struct OMPWireAmount: Decodable {
 
 private struct OMPWireResetCredits: Decodable {
     let availableCount: Int
+    let redeemableCount: Int?
+    let credits: [Readable<OMPWireResetCredit>]?
+}
+
+private struct OMPWireResetCredit: Decodable {
+    let expiresAt: OMPWireInstant?
 }
 
 private struct OMPWireDate: Decodable {
@@ -386,6 +393,30 @@ private struct OMPWireDate: Decodable {
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid OMP timestamp")
         }
         date = Date(timeIntervalSince1970: milliseconds / 1_000)
+    }
+}
+
+// A reset credit's time, which OMP writes as an ISO 8601 string unlike the snapshot's epoch milliseconds. A number is read as milliseconds too.
+private struct OMPWireInstant: Decodable {
+    let date: Date
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let milliseconds = try? container.decode(Double.self) {
+            guard milliseconds.isFinite else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid OMP timestamp")
+            }
+            date = Date(timeIntervalSince1970: milliseconds / 1_000)
+            return
+        }
+        let text = try container.decode(String.self)
+        if let parsed = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text) {
+            date = parsed
+        } else if let parsed = try? Date.ISO8601FormatStyle().parse(text) {
+            date = parsed
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid OMP timestamp")
+        }
     }
 }
 

@@ -298,7 +298,7 @@ final class AccountBadgeTests: XCTestCase {
                     id: "weekly",
                     label: "Claude 7 Day",
                     scope: nil,
-                    window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7 Day", durationMilliseconds: 604_800_000, resetLabel: nil),
+                    window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7 Day", durationMilliseconds: 604_800_000),
                     amount: UsageAmount(
                         used: 100 - remaining,
                         limit: 100,
