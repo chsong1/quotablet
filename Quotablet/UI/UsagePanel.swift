@@ -214,8 +214,8 @@ struct UsagePanel: View {
                 }
             }
             Divider()
-            Toggle("Start idle windows with a hello", isOn: startsIdleWindows)
-                .help("Send one short request through OMP when a provider has a window that has not started, so its reset clock begins.")
+            Toggle("Start each new week with a hello", isOn: startsIdleWindows)
+                .help("Send one short request through OMP when an account's weekly window has just reset and nothing has used it, so the new week's clock starts.")
             Button("Quit Quotablet", action: quit)
                 .keyboardShortcut("q", modifiers: .command)
         } label: {

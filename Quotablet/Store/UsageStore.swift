@@ -41,6 +41,8 @@ final class UsageStore {
     }
     // The last hello sent for each provider, so a cached report cannot ask for another one straight away.
     @ObservationIgnored private var helloAttempts: [String: Date] = [:]
+    // The weekly reset time last seen for each account, so a refresh can tell a new week from the same one.
+    @ObservationIgnored private var weeklyResets: [String: Date] = [:]
     private var refreshState = RefreshState.idle
     @ObservationIgnored private let schedulerInterval: Duration
     @ObservationIgnored private var schedulerTask: Task<Void, Never>?
@@ -121,6 +123,9 @@ final class UsageStore {
         reloadLogosIfChanged()
         snapshot = stored.snapshot
         snapshotOrigin = stored.snapshot == nil ? nil : .cached
+        if let snapshot = stored.snapshot {
+            recordWeeklyResets(in: snapshot, now: presentationDate)
+        }
         let interval = presentationInterval
         presentationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -287,7 +292,7 @@ final class UsageStore {
             if !(await persistence.save(snapshot: snapshot)) {
                 persistenceWarning = true
             }
-            await startIdleWindows(in: snapshot, now: now)
+            await startNewWeeks(in: snapshot, now: now)
         case .failure(let error):
             guard error != .cancelled else { return }
             lastError = error
@@ -305,24 +310,46 @@ final class UsageStore {
         }
     }
 
-    // Sends one hello per provider whose report shows a window OMP has not started. A provider keeps a cooldown because its cached report
-    // can keep saying "not started" after the hello, and because a refreshed report replaces the window within minutes.
-    private func startIdleWindows(in snapshot: UsageSnapshot, now: Date) async {
+    // Sends one hello per provider whose account has just moved into a new week and has not used it yet. One provider answers one hello,
+    // so a cooldown keeps several accounts that roll together from asking for several, and OMP decides which account spends it.
+    private func startNewWeeks(in snapshot: UsageSnapshot, now: Date) async {
         guard startsIdleWindows else { return }
         let configuration = CLIConfiguration(executablePath: executablePath)
         for usage in snapshot.providerUsage(now: now) {
-            let provider = usage.provider
-            if let last = helloAttempts[provider], now.timeIntervalSince(last) < Self.helloRetryInterval { continue }
-            guard
-                let detail = snapshot.providerDetail(of: provider, now: now),
-                detail.accounts.contains(where: \.needsStartingHello)
-            else { continue }
-            helloAttempts[provider] = now
-            try? await helloSender(provider, configuration)
+            guard let detail = snapshot.providerDetail(of: usage.provider, now: now) else { continue }
+            var rolledOver = false
+            for account in detail.accounts {
+                let key = weekKey(provider: usage.provider, account: account)
+                if account.startsNewWeek(after: weeklyResets[key]) {
+                    rolledOver = true
+                }
+                if let reset = account.weeklyWindow?.resetsAt {
+                    weeklyResets[key] = reset
+                }
+            }
+            guard rolledOver else { continue }
+            if let last = helloAttempts[usage.provider], now.timeIntervalSince(last) < Self.helloRetryInterval { continue }
+            helloAttempts[usage.provider] = now
+            try? await helloSender(usage.provider, configuration)
         }
     }
 
-    // Long enough to outlast a cached usage report, short enough to try again while the window is still idle.
+    // Remembers the weekly cycle each account is in, so the next refresh can tell a new week from the same one.
+    private func recordWeeklyResets(in snapshot: UsageSnapshot, now: Date) {
+        for usage in snapshot.providerUsage(now: now) {
+            guard let detail = snapshot.providerDetail(of: usage.provider, now: now) else { continue }
+            for account in detail.accounts {
+                guard let reset = account.weeklyWindow?.resetsAt else { continue }
+                weeklyResets[weekKey(provider: usage.provider, account: account)] = reset
+            }
+        }
+    }
+
+    private func weekKey(provider: String, account: AccountDetail) -> String {
+        "\(provider)|\(account.report.stableSortComponents.joined(separator: "|"))"
+    }
+
+    // Long enough for a cached report to settle after the hello; one hello per provider is enough for any week.
     private static let helloRetryInterval: TimeInterval = 30 * 60
 
     private func reloadLogosIfChanged() {
