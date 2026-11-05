@@ -839,15 +839,24 @@ struct AccountDetail: Equatable, Sendable {
     var urgency: QuotaUrgency? { report.topUrgency }
     var status: AccountStatus { report.accountStatus }
 
-    // True when a window OMP reports has no reset time and nothing used: the provider starts that window on the first request,
-    // so until one arrives the clock has not begun. A window that reports a reset time is already running.
-    var hasWindowWaitingToStart: Bool {
-        windows.contains { $0.resetsAt == nil && $0.usedFraction == 0 && $0.urgency != .exhausted }
+    // The account's weekly window, when OMP reports one. Its reset time moves forward when a new week begins.
+    var weeklyWindow: WindowEntry? {
+        windows.first { $0.name.short == "7d" }
     }
 
-    // The hello OMP needs to start such a window. Only an account with room left can send one; a spent account would be refused.
-    var needsStartingHello: Bool {
-        !isStale && (capacityFraction ?? 1) < 1 && hasWindowWaitingToStart
+    // True when the weekly window has moved into a new cycle since the last report, still has room, and no request has used it yet.
+    // That moment is when a hello starts the new week's clock rather than leaving it to the first real request.
+    func startsNewWeek(after previousReset: Date?) -> Bool {
+        guard
+            !isStale,
+            let weekly = weeklyWindow,
+            let reset = weekly.resetsAt,
+            let previousReset,
+            (capacityFraction ?? 1) < 1,
+            (weekly.usedFraction ?? 1) < 0.001
+        else { return false }
+        // A refreshed report moves the reset by whole days. Anything smaller is the same cycle.
+        return reset.timeIntervalSince(previousReset) > 60
     }
 
     // Credits that reset a quota, as the account's capsule counts them. Nil when OMP reports none.

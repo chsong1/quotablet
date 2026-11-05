@@ -488,11 +488,12 @@ final class UsageStoreTests: XCTestCase {
         )
     }
 
-    func testAnIdleWindowSendsOneHelloPerProviderUntilItsReportChanges() async throws {
+    func testANewWeeklyCycleSendsOneHelloPerProviderUntilTheNextOne() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let snapshot = idleWindowSnapshot(usedFraction: 0, resetsAt: nil)
-        let fetcher = SequencedFetcher([.success(snapshot), .success(snapshot)])
+        let first = weeklySnapshot(resetsAt: weekReset(2), usedFraction: 0.5)
+        let second = weeklySnapshot(resetsAt: weekReset(9), usedFraction: 0)
+        let fetcher = SequencedFetcher([.success(first), .success(second), .success(second)])
         let recorder = HelloRecorder()
         let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
             try await fetcher.fetch(configuration)
@@ -502,22 +503,20 @@ final class UsageStoreTests: XCTestCase {
         await store.setStartsIdleWindows(true)
         await store.refresh()
         await store.refresh()
-
+        await store.refresh()
 
         let providers = await recorder.providers
         XCTAssertEqual(providers, ["anthropic"])
         await store.shutdown()
     }
 
-    func testNoHelloIsSentWhileTheChoiceIsOffTheAccountHasNoRoomOrTheWindowIsRunning() async throws {
+    func testNoHelloIsSentWhileTheChoiceIsOffOrTheNewWeekIsAlreadySpent() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuotabletTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let snapshots = [
-            idleWindowSnapshot(usedFraction: 0, resetsAt: nil),
-            idleWindowSnapshot(usedFraction: 1, resetsAt: nil),
-            idleWindowSnapshot(usedFraction: 0, resetsAt: Date(timeIntervalSince1970: 1_800_003_600))
-        ]
-        let fetcher = SequencedFetcher([.success(snapshots[0]), .success(snapshots[1]), .success(snapshots[2])])
+        let first = weeklySnapshot(resetsAt: weekReset(2), usedFraction: 0.5)
+        let second = weeklySnapshot(resetsAt: weekReset(9), usedFraction: 0.5)
+        let third = weeklySnapshot(resetsAt: weekReset(16), usedFraction: 1)
+        let fetcher = SequencedFetcher([.success(first), .success(second), .success(third)])
         let recorder = HelloRecorder()
         let store = UsageStore(persistence: AppPersistence(directoryURL: directory)) { configuration in
             try await fetcher.fetch(configuration)
@@ -525,8 +524,8 @@ final class UsageStoreTests: XCTestCase {
         store.helloSender = { provider, _ in await recorder.record(provider) }
 
         await store.refresh()
-        await store.setStartsIdleWindows(true)
         await store.refresh()
+        await store.setStartsIdleWindows(true)
         await store.refresh()
 
         let providers = await recorder.providers
@@ -553,8 +552,13 @@ final class UsageStoreTests: XCTestCase {
         await restarted.shutdown()
     }
 
-    private func idleWindowSnapshot(usedFraction: Double, resetsAt: Date?) -> UsageSnapshot {
-        let amount = UsageAmount(
+    private func weekReset(_ days: Double) -> Date {
+        Date().addingTimeInterval(days * 86_400)
+    }
+
+    private func weeklySnapshot(resetsAt: Date, usedFraction: Double) -> UsageSnapshot {
+        let scope = QuotaScope(provider: "anthropic", accountID: "acct-weekly", organizationID: nil, projectID: nil, tier: nil)
+        let weeklyAmount = UsageAmount(
             used: usedFraction * 100,
             limit: 100,
             remaining: 100 - usedFraction * 100,
@@ -562,25 +566,35 @@ final class UsageStoreTests: XCTestCase {
             remainingFraction: 1 - usedFraction,
             unit: .percent
         )
-        let quota = UsageQuotaDraft(
-            id: "anthropic:5h",
-            label: "5 Hour",
-            scope: QuotaScope(provider: "anthropic", accountID: "acct-idle", organizationID: nil, projectID: nil, tier: nil),
-            window: QuotaWindow(identity: QuotaWindowIdentity(id: "5h"), label: "5 Hour", durationMilliseconds: 18_000_000),
-            amount: amount,
+        let weekly = UsageQuotaDraft(
+            id: "anthropic:7d",
+            label: "Claude 7 Day",
+            scope: scope,
+            window: QuotaWindow(identity: QuotaWindowIdentity(id: "7d"), label: "7 Day", durationMilliseconds: 604_800_000),
+            amount: weeklyAmount,
             status: usedFraction >= 1 ? .exhausted : .available,
             resetsAt: resetsAt
+        )
+        // A 5-hour window that has not started must not ask for a hello on its own: the weekly cycle is what a hello starts.
+        let fiveHour = UsageQuotaDraft(
+            id: "anthropic:5h",
+            label: "Claude 5 Hour",
+            scope: scope,
+            window: QuotaWindow(identity: QuotaWindowIdentity(id: "5h"), label: "5 Hour", durationMilliseconds: 18_000_000),
+            amount: UsageAmount(used: 0, limit: 100, remaining: 100, usedFraction: 0, remainingFraction: 1, unit: .percent),
+            status: .available,
+            resetsAt: nil
         )
         return UsageSnapshot(
             generatedAt: Date(),
             reportDrafts: [
                 UsageReportDraft(
                     provider: "anthropic",
-                    sourceAccount: SourceAccountIdentity(accountID: "acct-idle", organizationID: nil, projectID: nil),
-                    privateDisplayLabel: "idle@example.invalid",
+                    sourceAccount: SourceAccountIdentity(accountID: "acct-weekly", organizationID: nil, projectID: nil),
+                    privateDisplayLabel: "weekly@example.invalid",
                     fetchedAt: Date(),
                     resetCredits: nil,
-                    quotas: [quota]
+                    quotas: [weekly, fiveHour]
                 )
             ]
         )
